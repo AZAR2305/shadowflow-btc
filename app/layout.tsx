@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { JetBrains_Mono, Outfit, Syne } from "next/font/google";
 
 import "./globals.css";
+import { Navbar } from "@/components/layout/Navbar";
+import { Sidebar } from "@/components/layout/Sidebar";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 
 const syne = Syne({
@@ -35,7 +37,15 @@ export default function RootLayout({
       <body
         className={`${syne.variable} ${jetbrainsMono.variable} ${outfit.variable} min-h-screen bg-background text-foreground font-body antialiased`}
       >
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <div className="min-h-screen">
+            <Navbar />
+            <div className="mx-auto flex max-w-[1400px]">
+              <Sidebar />
+              <div className="min-w-0 flex-1">{children}</div>
+            </div>
+          </div>
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -14,7 +14,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import type { StrategyNode } from "@/types";
 
-const baseSchema = z.record(z.union([z.string(), z.number(), z.boolean()]));
+const baseSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 
 interface Props {
   node: StrategyNode | null;
@@ -28,7 +28,7 @@ export function NodeConfigPanel({ node, onUpdate }: Props) {
     if (!node) {
       return {};
     }
-    return node.data as Record<string, string | number | boolean>;
+    return node.data as unknown as Record<string, string | number | boolean>;
   }, [node]);
 
   const form = useForm<Record<string, string | number | boolean>>({

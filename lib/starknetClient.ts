@@ -1,8 +1,60 @@
-import { Provider, RpcProvider } from "starknet";
+import { Provider, RpcProvider, Contract, ABI } from "starknet";
 
 const DEFAULT_RPC =
   process.env.NEXT_PUBLIC_STARKNET_RPC_URL ||
-  "https://starknet-sepolia.public.blastapi.io/rpc/v0_8";
+  "https://api.cartridge.gg/x/starknet/sepolia";
+
+const VERIFIER_ADDRESS = process.env.NEXT_PUBLIC_GARAGA_VERIFIER_ADDRESS || "";
+const SHADOWFLOW_ADDRESS = process.env.NEXT_PUBLIC_SHADOWFLOW_CONTRACT_ADDRESS || "";
+
+// Minimal ABI for GaragaVerifier contract
+const VERIFIER_ABI: ABI = [
+  {
+    type: "function",
+    name: "verify",
+    inputs: [
+      { name: "proof_hash", type: "felt252" },
+      { name: "public_inputs_hash", type: "felt252" },
+    ],
+    outputs: [{ name: "is_valid", type: "bool" }],
+    state_mutability: "view",
+  },
+  {
+    type: "function",
+    name: "set_allowed_proof",
+    inputs: [
+      { name: "proof_hash", type: "felt252" },
+      { name: "is_allowed", type: "bool" },
+    ],
+    outputs: [],
+    state_mutability: "external",
+  },
+];
+
+// Minimal ABI for ShadowFlow contract
+const SHADOWFLOW_ABI: ABI = [
+  {
+    type: "function",
+    name: "get_commitment",
+    inputs: [{ name: "user", type: "ContractAddress" }],
+    outputs: [{ name: "commitment", type: "felt252" }],
+    state_mutability: "view",
+  },
+  {
+    type: "function",
+    name: "get_merkle_root",
+    inputs: [],
+    outputs: [{ name: "root", type: "felt252" }],
+    state_mutability: "view",
+  },
+  {
+    type: "function",
+    name: "is_nullifier_spent",
+    inputs: [{ name: "nullifier", type: "felt252" }],
+    outputs: [{ name: "spent", type: "bool" }],
+    state_mutability: "view",
+  },
+];
 
 export interface VerificationReceipt {
   txHash: string;
@@ -10,15 +62,123 @@ export interface VerificationReceipt {
   success: boolean;
 }
 
+export interface ProofVerificationResult {
+  proofHash: string;
+  publicInputsHash: string;
+  isValid: boolean;
+  timestamp: number;
+}
+
+interface ChainStateResponse {
+  merkleRoot: string;
+  spentNullifiers: string[];
+}
+
 export class ShadowFlowStarknetClient {
   provider: Provider;
   private executionApiUrl?: string;
   private realExecutionEnabled: boolean;
+  private verifierAddress: string;
+  private shadowflowAddress: string;
 
   constructor(rpcUrl = DEFAULT_RPC) {
     this.provider = new RpcProvider({ nodeUrl: rpcUrl });
     this.executionApiUrl = process.env.NEXT_PUBLIC_EXECUTION_API_URL;
     this.realExecutionEnabled = process.env.NEXT_PUBLIC_ENABLE_REAL_EXECUTION === "true";
+    this.verifierAddress = VERIFIER_ADDRESS;
+    this.shadowflowAddress = SHADOWFLOW_ADDRESS;
+  }
+
+  /**
+   * Verify a proof directly against the on-chain GaragaVerifier contract
+   */
+  async verifyProofOnChain(
+    proofHash: string,
+    publicInputsHash: string
+  ): Promise<ProofVerificationResult> {
+    if (!this.verifierAddress) {
+      throw new Error(
+        "GaragaVerifier contract address not configured. Set NEXT_PUBLIC_GARAGA_VERIFIER_ADDRESS."
+      );
+    }
+
+    try {
+      // Create contract instance
+      const verifierContract = new Contract(VERIFIER_ABI, this.verifierAddress, this.provider);
+
+      // Call the verify function
+      const result = await verifierContract.verify(proofHash, publicInputsHash);
+
+      return {
+        proofHash,
+        publicInputsHash,
+        isValid: Boolean(result),
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`On-chain proof verification failed: ${message}`);
+    }
+  }
+
+  /**
+   * Query the ShadowFlow contract for a user's commitment
+   */
+  async getCommitment(userAddress: string): Promise<string> {
+    if (!this.shadowflowAddress) {
+      throw new Error(
+        "ShadowFlow contract address not configured. Set NEXT_PUBLIC_SHADOWFLOW_CONTRACT_ADDRESS."
+      );
+    }
+
+    try {
+      const shadowflowContract = new Contract(SHADOWFLOW_ABI, this.shadowflowAddress, this.provider);
+      const commitment = await shadowflowContract.get_commitment(userAddress);
+      return commitment.toString();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`Failed to fetch commitment: ${message}`);
+    }
+  }
+
+  /**
+   * Query the current Merkle root from ShadowFlow contract
+   */
+  async getMerkleRoot(): Promise<string> {
+    if (!this.shadowflowAddress) {
+      throw new Error(
+        "ShadowFlow contract address not configured. Set NEXT_PUBLIC_SHADOWFLOW_CONTRACT_ADDRESS."
+      );
+    }
+
+    try {
+      const shadowflowContract = new Contract(SHADOWFLOW_ABI, this.shadowflowAddress, this.provider);
+      const root = await shadowflowContract.get_merkle_root();
+      return root.toString();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`Failed to fetch Merkle root: ${message}`);
+    }
+  }
+
+  /**
+   * Check if a nullifier has been spent in the ShadowFlow contract
+   */
+  async isNullifierSpent(nullifier: string): Promise<boolean> {
+    if (!this.shadowflowAddress) {
+      throw new Error(
+        "ShadowFlow contract address not configured. Set NEXT_PUBLIC_SHADOWFLOW_CONTRACT_ADDRESS."
+      );
+    }
+
+    try {
+      const shadowflowContract = new Contract(SHADOWFLOW_ABI, this.shadowflowAddress, this.provider);
+      const spent = await shadowflowContract.is_nullifier_spent(nullifier);
+      return Boolean(spent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`Failed to check nullifier status: ${message}`);
+    }
   }
 
   async storeCommitment(commitment: string): Promise<VerificationReceipt> {
@@ -69,6 +229,49 @@ export class ShadowFlowStarknetClient {
 
     const data = (await response.json()) as VerificationReceipt;
     return data;
+  }
+
+  async checkNullifierSpent(nullifier: string): Promise<boolean> {
+    if (!this.realExecutionEnabled) {
+      throw new Error("Real execution is disabled. Enable NEXT_PUBLIC_ENABLE_REAL_EXECUTION=true.");
+    }
+
+    if (!this.executionApiUrl) {
+      throw new Error("Missing NEXT_PUBLIC_EXECUTION_API_URL for nullifier checks.");
+    }
+
+    const response = await fetch(
+      `${this.executionApiUrl}/nullifier/spent?nullifier=${encodeURIComponent(nullifier)}`,
+      { method: "GET", headers: { "Content-Type": "application/json" } },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Nullifier status failed: ${response.status}`);
+    }
+
+    const data = (await response.json()) as { spent: boolean };
+    return data.spent;
+  }
+
+  async syncChainState(): Promise<ChainStateResponse> {
+    if (!this.realExecutionEnabled) {
+      throw new Error("Real execution is disabled. Enable NEXT_PUBLIC_ENABLE_REAL_EXECUTION=true.");
+    }
+
+    if (!this.executionApiUrl) {
+      throw new Error("Missing NEXT_PUBLIC_EXECUTION_API_URL for chain state sync.");
+    }
+
+    const response = await fetch(`${this.executionApiUrl}/chain/state`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Chain state sync failed: ${response.status}`);
+    }
+
+    return (await response.json()) as ChainStateResponse;
   }
 }
 

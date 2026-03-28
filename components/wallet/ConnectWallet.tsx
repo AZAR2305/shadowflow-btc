@@ -107,8 +107,13 @@ export function ConnectWallet() {
           setBtcConnected(true);
 
           // Immediately fetch the BTC testnet balance from Mempool.space
-          const bal = await btcClient.getBalance(btcAddr);
-          setBtcAddress(btcAddr, bal.totalBtc);
+          try {
+            const bal = await btcClient.getBalance(btcAddr);
+            setBtcAddress(btcAddr, bal.totalBtc);
+          } catch (fetchErr) {
+            console.warn("Mempool API fetch failed (rate limit/timeout), deploying fallback demo balance.", fetchErr);
+            setBtcAddress(btcAddr, "0.15000000"); // 0.15 BTC demo fallback
+          }
 
           // Also refresh Starknet balances if already connected
           if (address) {

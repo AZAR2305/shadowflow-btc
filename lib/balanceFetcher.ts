@@ -7,7 +7,7 @@
  * BTC balance is fetched from the Mempool.space testnet4 public API.
  */
 
-import { RpcProvider, Contract } from "starknet";
+import { RpcProvider } from "starknet";
 import { btcClient } from "@/lib/btcClient";
 
 // ── Starknet token addresses (Sepolia) ────────────────────────────────────────
@@ -20,16 +20,7 @@ const STARKNET_RPC =
   process.env.NEXT_PUBLIC_STARKNET_RPC_URL ??
   "https://api.cartridge.gg/x/starknet/sepolia";
 
-// ── Minimal ERC20 ABI (only balanceOf needed) ─────────────────────────────────
-const ERC20_ABI = [
-  {
-    name: "balanceOf",
-    type: "function",
-    inputs: [{ name: "account", type: "core::starknet::contract_address::ContractAddress" }],
-    outputs: [{ type: "core::integer::u256" }],
-    state_mutability: "view",
-  },
-] as const;
+
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -66,7 +57,6 @@ function formatU256(raw: { low: bigint; high: bigint } | bigint, decimals: numbe
 export async function fetchStrkBalance(address: string): Promise<string> {
   try {
     const provider = getProvider();
-    const contract = new Contract(ERC20_ABI as unknown as Parameters<typeof Contract>[0], STRK_ADDRESS, provider);
     // Use callData directly to avoid ABI generic issues
     const result = await provider.callContract({
       contractAddress: STRK_ADDRESS,

@@ -15,9 +15,7 @@ interface CheckResult {
   chainVerification: { verified: boolean; error?: string } | null;
 }
 
-import { Suspense } from "react";
-
-function VerifyContent() {
+export default function VerifyPage() {
   const searchParams = useSearchParams();
   const [hashInput, setHashInput] = useState("");
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -131,13 +129,5 @@ function VerifyContent() {
         </section>
       ) : null}
     </main>
-  );
-}
-
-export default function VerifyPage() {
-  return (
-    <Suspense fallback={<div className="p-4 text-xs text-muted">Loading verifier...</div>}>
-      <VerifyContent />
-    </Suspense>
   );
 }

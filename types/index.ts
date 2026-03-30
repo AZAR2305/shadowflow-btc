@@ -1,4 +1,4 @@
-export type NodeType = "condition" | "split" | "execute" | "constraint" | "btc_transfer";
+export type NodeType = "condition" | "split" | "execute" | "constraint";
 
 export interface ConditionData {
   asset: "BTC";
@@ -17,15 +17,6 @@ export interface ExecuteData {
   delayMs: number; // PRIVATE — never log or transmit
 }
 
-export interface BtcTransferData {
-  asset: "BTC";
-  fromAddress: string; // PRIVATE — sender BTC testnet4 address, never log
-  toAddress: string;   // PRIVATE — recipient BTC testnet4 address, never log
-  btcAmount: number;   // PRIVATE — amount in BTC, never log
-  htlcTimelock: number; // PUBLIC — locktime in blocks (e.g. 144 = ~24h)
-  commitment: string;  // PUBLIC — Poseidon(secret, nullifier) stored on Starknet
-}
-
 export interface ConstraintData {
   field: string;
   operator: "<" | ">" | "==" | ">=" | "<=";
@@ -36,7 +27,7 @@ export interface StrategyNode {
   id: string;
   type: NodeType;
   position: { x: number; y: number };
-  data: ConditionData | SplitData | ExecuteData | ConstraintData | BtcTransferData;
+  data: ConditionData | SplitData | ExecuteData | ConstraintData;
 }
 
 export interface NodeGraph {
@@ -59,7 +50,7 @@ export interface Strategy {
 
 export interface ZKConstraint {
   nodeId: string;
-  constraintType: "range_check" | "sum_partition" | "state_transition" | "assertion" | "asset_commitment";
+  constraintType: "range_check" | "sum_partition" | "state_transition" | "assertion";
   publicInputs: string[];
   privateWitness: string[]; // PRIVATE — never log or transmit
   estimatedSize: number; // in bytes for cost estimation

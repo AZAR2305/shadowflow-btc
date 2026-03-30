@@ -12,6 +12,11 @@ interface WalletBalances {
   strkBalance: string;
 }
 
+interface LivePrices {
+  btc: number;
+  strk: number;
+}
+
 interface StrategySummary {
   id: string;
   direction: "buy" | "sell";
@@ -65,10 +70,12 @@ const defaultIntentState: IntentFormState = {
   direction: "buy",
   templateId: "simple",
   selectedPath: "btc_otc_main",
-  amount: "0.0500",
-  priceThreshold: "60000",
+  // Filled from wallet balances on connect/refresh.
+  amount: "",
+  // This is the "CRT receive amount" (receiveAmount) the backend validates against oracle.
+  priceThreshold: "",
   splitCount: "1",
-  depositAmount: "0.0500",
+  depositAmount: "",
   depositConfirmed: true,
   sendChain: "strk",
   receiveChain: "btc",
@@ -120,6 +127,31 @@ export function OtcIntentPage() {
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [livePrices, setLivePrices] = useState<LivePrices>({ btc: 0, strk: 0 });
+  const [amountManuallyEdited, setAmountManuallyEdited] = useState(false);
+  const [priceThresholdManuallyEdited, setPriceThresholdManuallyEdited] = useState(false);
+
+  // Native live Oracle Price polling for accurate Frontend Estimates 
+  useEffect(() => {
+    const fetchPrices = async () => {
+      try {
+        const btcId = 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43';
+        const strkId = '6a182399ff70ccf3e06024898942028204125a819e519a335ffa4579e66cd870';
+        const res = await fetch(`https://hermes.pyth.network/v2/updates/price/latest?ids[]=${btcId}&ids[]=${strkId}`);
+        const oracle = await res.json();
+        const formatPrice = (p: { price: string; expo: number }) => parseFloat(p.price) * Math.pow(10, p.expo);
+        setLivePrices({
+          btc: formatPrice(oracle.parsed[0].price),
+          strk: formatPrice(oracle.parsed[1].price),
+        });
+      } catch (err) {
+        console.warn("Oracle sync failed:", err);
+      }
+    };
+    fetchPrices();
+    const timer = setInterval(fetchPrices, 15000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Set wallet address from BTC wallet when connected
   useEffect(() => {
@@ -141,6 +173,15 @@ export function OtcIntentPage() {
     setError(null);
 
     try {
+      const btcAddress =
+        walletAddress.trim().toLowerCase().startsWith("tb1") ||
+        walletAddress.trim().toLowerCase().startsWith("bc1")
+          ? walletAddress.trim()
+          : wallet?.address ?? "";
+      const starknetAddress = intent.receiveWalletAddress.trim().startsWith("0x")
+        ? intent.receiveWalletAddress.trim()
+        : "";
+
       const [
         balances,
         strategies,
@@ -151,7 +192,11 @@ export function OtcIntentPage() {
         attestation,
         chainState,
       ] = await Promise.all([
-        requestJson<WalletBalances>(`/api/wallet/balances?walletAddress=${encodedWallet}`),
+        requestJson<WalletBalances>(
+          `/api/wallet/balances?walletAddress=${encodedWallet}&btcAddress=${encodeURIComponent(
+            btcAddress,
+          )}&starknetAddress=${encodeURIComponent(starknetAddress)}`,
+        ),
         requestJson<StrategySummary[]>(`/api/otc/strategies?walletAddress=${encodedWallet}`),
         requestJson<TradeRecord[]>(`/api/otc/trades?walletAddress=${encodedWallet}`),
         requestJson<OtcMatchRecord[]>(`/api/otc/matches?walletAddress=${encodedWallet}`),
@@ -167,7 +212,51 @@ export function OtcIntentPage() {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, encodedWallet]);
+  }, [walletAddress, encodedWallet, wallet?.address, intent.receiveWalletAddress]);
+
+  // When we connect a BTC wallet, immediately fetch balances so the form
+  // doesn't rely on any hardcoded default amounts.
+  useEffect(() => {
+    if (wallet?.connected && walletAddress.trim()) {
+      void fetchBackendState();
+    }
+  }, [wallet?.connected, walletAddress, fetchBackendState]);
+
+  // Auto-fill "send amount" (and deposit) from wallet balances, and compute the
+  // corresponding oracle-verified "CRT receive amount" (priceThreshold).
+  // User edits override these fields.
+  useEffect(() => {
+    const sendBalanceStr = intent.sendChain === "btc" ? data.balances.btcBalance : data.balances.strkBalance;
+    const sendBalance = Number(sendBalanceStr);
+    if (!Number.isFinite(sendBalance) || sendBalance <= 0) return;
+    if (amountManuallyEdited) return;
+
+    setIntent((prev) => {
+      const formattedAmount = prev.sendChain === "btc" ? sendBalance.toFixed(4) : sendBalance.toFixed(2);
+      const depositAmount = formattedAmount;
+
+      let priceThreshold = prev.priceThreshold;
+      if (!priceThresholdManuallyEdited && livePrices.btc > 0 && livePrices.strk > 0) {
+        if (prev.sendChain === "btc") {
+          // BTC -> STRK
+          priceThreshold = ((Number(formattedAmount) * livePrices.btc) / livePrices.strk).toFixed(4);
+        } else {
+          // STRK -> BTC
+          priceThreshold = ((Number(formattedAmount) * livePrices.strk) / livePrices.btc).toFixed(8);
+        }
+      }
+
+      return { ...prev, amount: formattedAmount, depositAmount, priceThreshold };
+    });
+  }, [
+    data.balances.btcBalance,
+    data.balances.strkBalance,
+    intent.sendChain,
+    livePrices.btc,
+    livePrices.strk,
+    amountManuallyEdited,
+    priceThresholdManuallyEdited,
+  ]);
 
   const handleIntentSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -183,6 +272,19 @@ export function OtcIntentPage() {
       setSuccess(null);
 
       try {
+        const amountNum = Number(intent.amount);
+        const priceThresholdNum = Number(intent.priceThreshold);
+        const depositAmountNum = Number(intent.depositAmount);
+
+        if (!Number.isFinite(amountNum) || amountNum <= 0) {
+          setError("Enter a valid send amount (BTC/STRK) before submitting.");
+          return;
+        }
+        if (!Number.isFinite(depositAmountNum) || depositAmountNum <= 0) {
+          setError("Enter a valid deposit amount before submitting.");
+          return;
+        }
+
         await requestJson("/api/otc/intents", {
           method: "POST",
           body: JSON.stringify({
@@ -190,10 +292,10 @@ export function OtcIntentPage() {
             direction: intent.direction,
             templateId: intent.templateId,
             selectedPath: intent.selectedPath,
-            amount: Number(intent.amount),
-            priceThreshold: Number(intent.priceThreshold),
+            amount: amountNum,
+            priceThreshold: priceThresholdNum,
             splitCount: Number(intent.splitCount),
-            depositAmount: Number(intent.depositAmount),
+            depositAmount: depositAmountNum,
             depositConfirmed: intent.depositConfirmed,
             sendChain: intent.sendChain,
             receiveChain: intent.receiveChain,
@@ -234,6 +336,8 @@ export function OtcIntentPage() {
       setSuccess("Previous buyer/seller intents cleared. You can create a new intent now.");
       setData(defaultState);
       setIntent(defaultIntentState);
+      setAmountManuallyEdited(false);
+      setPriceThresholdManuallyEdited(false);
       if (walletAddress.trim()) {
         await fetchBackendState();
       }
@@ -417,6 +521,8 @@ export function OtcIntentPage() {
                         value={intent.sendChain}
                         onChange={(event) => {
                           const newSend = event.target.value as "btc" | "strk";
+                          setAmountManuallyEdited(false);
+                          setPriceThresholdManuallyEdited(false);
                           setIntent((prev) => ({
                             ...prev,
                             sendChain: newSend,
@@ -438,6 +544,8 @@ export function OtcIntentPage() {
                         value={intent.receiveChain}
                         onChange={(event) => {
                           const newReceive = event.target.value as "btc" | "strk";
+                          setAmountManuallyEdited(false);
+                          setPriceThresholdManuallyEdited(false);
                           setIntent((prev) => ({
                             ...prev,
                             receiveChain: newReceive,
@@ -479,7 +587,23 @@ export function OtcIntentPage() {
                           min="0"
                           step={intent.sendChain === "btc" ? "0.0001" : "0.01"}
                           value={intent.amount}
-                          onChange={(event) => setIntent((prev) => ({ ...prev, amount: event.target.value }))}
+                          onChange={(event) => {
+                            const val = event.target.value;
+                            setAmountManuallyEdited(true);
+                            setPriceThresholdManuallyEdited(false);
+                            setIntent((prev) => {
+                              const updated = { ...prev, amount: val, depositAmount: val };
+                              if (livePrices.btc > 0 && livePrices.strk > 0) {
+                                const num = parseFloat(val) || 0;
+                                if (prev.sendChain === "btc") {
+                                  updated.priceThreshold = ((num * livePrices.btc) / livePrices.strk).toFixed(4);
+                                } else {
+                                  updated.priceThreshold = ((num * livePrices.strk) / livePrices.btc).toFixed(8);
+                                }
+                              }
+                              return updated;
+                            });
+                          }}
                           className="flex-1 border-0 bg-transparent px-3 py-2 text-sm font-bold outline-none"
                         />
                         <span className="px-2 text-xs font-bold uppercase">{intent.sendChain}</span>
@@ -496,7 +620,10 @@ export function OtcIntentPage() {
                           min="0"
                           step={intent.receiveChain === "btc" ? "0.0001" : "0.01"}
                           value={intent.priceThreshold}
-                          onChange={(event) => setIntent((prev) => ({ ...prev, priceThreshold: event.target.value }))}
+                          onChange={(event) => {
+                            setPriceThresholdManuallyEdited(true);
+                            setIntent((prev) => ({ ...prev, priceThreshold: event.target.value }));
+                          }}
                           className="flex-1 border-0 bg-transparent px-3 py-2 text-sm font-bold outline-none"
                         />
                         <span className="px-2 text-xs font-bold uppercase">{intent.receiveChain}</span>

@@ -278,6 +278,39 @@ function addExecutionLogs(
 
 function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
   const matchedRecords: OtcMatchRecord[] = [];
+  const impliedBtcPerStrk = (order: OtcOrder): number | null => {
+    if (order.amount <= 0 || order.priceThreshold <= 0) return null;
+    if (order.sendChain === "strk" && order.receiveChain === "btc") {
+      return order.priceThreshold / order.amount;
+    }
+    if (order.sendChain === "btc" && order.receiveChain === "strk") {
+      return order.amount / order.priceThreshold;
+    }
+    return null;
+  };
+  const toBtc = (sendAmount: number, sendChain: ChainType, btcPerStrk: number): number => {
+    if (sendChain === "btc") return sendAmount;
+    return sendAmount * btcPerStrk;
+  };
+  const fromBtc = (btcAmount: number, sendChain: ChainType, btcPerStrk: number): number => {
+    if (sendChain === "btc") return btcAmount;
+    if (btcPerStrk <= 0) return 0;
+    return btcAmount / btcPerStrk;
+  };
+  const receiveFromSend = (order: OtcOrder, executedSendAmount: number): number => {
+    if (order.amount <= 0) return 0;
+    return executedSendAmount * (order.priceThreshold / order.amount);
+  };
+  const creditReceive = (wallet: WalletState, chain: ChainType, amount: number): void => {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (chain === "btc") {
+      const btc = toNumber(wallet.balances.btcBalance);
+      wallet.balances.btcBalance = (btc + amount).toFixed(8);
+      return;
+    }
+    const strk = toNumber(wallet.balances.strkBalance);
+    wallet.balances.strkBalance = (strk + amount).toFixed(4);
+  };
 
   const oppositeBook = incoming.direction === "buy" ? state.orderBook.sell : state.orderBook.buy;
   oppositeBook.sort((a, b) => a.createdAt - b.createdAt);
@@ -295,21 +328,45 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       continue;
     }
 
+    const reversePair =
+      incoming.sendChain === candidate.receiveChain &&
+      incoming.receiveChain === candidate.sendChain;
+    const samePair =
+      incoming.sendChain === candidate.sendChain &&
+      incoming.receiveChain === candidate.receiveChain;
+    if (!reversePair && !samePair) {
+      index += 1;
+      continue;
+    }
+
     const buyOrder = incoming.direction === "buy" ? incoming : candidate;
     const sellOrder = incoming.direction === "sell" ? incoming : candidate;
 
-    if (buyOrder.priceThreshold < sellOrder.priceThreshold) {
+    const buyRate = impliedBtcPerStrk(buyOrder);
+    const sellRate = impliedBtcPerStrk(sellOrder);
+    if (buyRate === null || sellRate === null) {
       index += 1;
       continue;
     }
 
-    const fillAmount = Math.min(incoming.remainingAmount, candidate.remainingAmount);
-    if (fillAmount <= 0) {
+    if (buyRate < sellRate) {
       index += 1;
       continue;
     }
 
-    const executionPrice = Number(((buyOrder.priceThreshold + sellOrder.priceThreshold) / 2).toFixed(2));
+    const incomingBtc = toBtc(incoming.remainingAmount, incoming.sendChain, incoming.direction === "buy" ? buyRate : sellRate);
+    const candidateBtc = toBtc(candidate.remainingAmount, candidate.sendChain, candidate.direction === "buy" ? buyRate : sellRate);
+    const fillBtc = Math.min(incomingBtc, candidateBtc);
+    if (fillBtc <= 0) {
+      index += 1;
+      continue;
+    }
+
+    const incomingExecutedSend = fromBtc(fillBtc, incoming.sendChain, incoming.direction === "buy" ? buyRate : sellRate);
+    const candidateExecutedSend = fromBtc(fillBtc, candidate.sendChain, candidate.direction === "buy" ? buyRate : sellRate);
+    const fillAmount = incoming.direction === "buy" ? incomingExecutedSend : candidateExecutedSend;
+
+    const executionPrice = Number(((buyRate + sellRate) / 2).toFixed(12)); // BTC per STRK
     const now = Date.now();
     const settlementCommitment = makeCommitment(
       buyOrder.walletAddress,
@@ -319,17 +376,15 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
     );
     const proofHash = settlementCommitment;
 
-    incoming.remainingAmount = Number((incoming.remainingAmount - fillAmount).toFixed(8));
-    candidate.remainingAmount = Number((candidate.remainingAmount - fillAmount).toFixed(8));
+    incoming.remainingAmount = Number((incoming.remainingAmount - incomingExecutedSend).toFixed(8));
+    candidate.remainingAmount = Number((candidate.remainingAmount - candidateExecutedSend).toFixed(8));
 
     const buyerWallet = getOrCreateWallet(state, buyOrder.walletAddress);
     const sellerWallet = getOrCreateWallet(state, sellOrder.walletAddress);
 
-    const buyerBtc = toNumber(buyerWallet.balances.btcBalance);
-    buyerWallet.balances.btcBalance = (buyerBtc + fillAmount).toFixed(4);
-
-    const sellerStrk = toNumber(sellerWallet.balances.strkBalance);
-    sellerWallet.balances.strkBalance = (sellerStrk + fillAmount).toFixed(2);
+    // Credit what each side receives, based on each order's stated receive ratio.
+    creditReceive(buyerWallet, buyOrder.receiveChain, receiveFromSend(buyOrder, incoming.direction === "buy" ? incomingExecutedSend : candidateExecutedSend));
+    creditReceive(sellerWallet, sellOrder.receiveChain, receiveFromSend(sellOrder, incoming.direction === "sell" ? incomingExecutedSend : candidateExecutedSend));
 
     applyMatchedStatus(
       buyerWallet,
@@ -477,6 +532,24 @@ export async function listMatches(walletAddress: string): Promise<OtcMatchRecord
   return wallet.matches
     .map((match) => ensureMatchFlags(match))
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function loadMatchById(matchId: string): Promise<OtcMatchRecord | null> {
+  const state = await loadState();
+  const directMatch = state.matches.find((m) => m.id === matchId);
+  if (directMatch) {
+    return ensureMatchFlags(directMatch);
+  }
+
+  // Fallback for older state where matches may only exist under wallet scopes.
+  for (const wallet of Object.values(state.wallets)) {
+    const scopedMatch = wallet.matches.find((m) => m.id === matchId);
+    if (scopedMatch) {
+      return ensureMatchFlags(scopedMatch);
+    }
+  }
+
+  return null;
 }
 
 export async function listExecutionLogs(walletAddress: string): Promise<ExecutionLog[]> {

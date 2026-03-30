@@ -115,9 +115,28 @@ mod LiquidityPool {
         }));
     }
 
-    #[external(v0)]
-    fn is_pair_allowed(self: @ContractState, token_a: ContractAddress, token_b: ContractAddress) -> bool {
-        self.allowed_pairs.read((token_a, token_b))
+    }
+
+    // Attach helper/query methods to ContractState via impl block
+    impl LiquidityPool of LiquidityPoolTrait {
+        // Removed from here: will be in impl block
+        #[external(v0)]
+        fn is_pair_allowed(self: @ContractState, token_a: ContractAddress, token_b: ContractAddress) -> bool {
+            self.allowed_pairs.read((token_a, token_b))
+        }
+
+        fn _calculate_output(self: @ContractState, from_amount: u256, rate_from: u256, rate_to: u256) -> u256 {
+            (from_amount * rate_to) / rate_from
+        }
+
+        fn _calculate_fee(self: @ContractState, amount: u256, fee_bps: u256) -> u256 {
+            (amount * fee_bps) / 10000
+        }
+
+        fn _calculate_lp_shares(self: @ContractState, amount_a: u256, amount_b: u256, total_shares: u256) -> u256 {
+            // Simplified: use arithmetic mean
+            ((amount_a + amount_b) / 2) + (total_shares / 4)
+        }
     }
 
     // ============================================

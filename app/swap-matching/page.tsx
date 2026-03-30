@@ -21,15 +21,22 @@ export const metadata = {
 export default function SwapMatchingPage({ searchParams }: SwapMatchingPageProps) {
   const walletAddress = searchParams.wallet || "0x...";
   const direction = (searchParams.direction || "buy") as "buy" | "sell";
-  const amount = searchParams.amount || "0.05";
-  const price = searchParams.price || "60000";
+  const amount = searchParams.amount;
+  const price = searchParams.price;
 
-  // Default chains: buy = send STRK, receive BTC; sell = send BTC, receive STRK
-  const defaultSend = direction === "buy" ? "strk" : "btc";
-  const defaultReceive = direction === "buy" ? "btc" : "strk";
-  const sendChain = (searchParams.sendChain || defaultSend) as "btc" | "strk";
-  const receiveChain = (searchParams.receiveChain || defaultReceive) as "btc" | "strk";
-  const receiveWalletAddress = searchParams.receiveWalletAddress || "";
+  if (!amount || !price) {
+    return (
+      <main className="flex flex-col min-h-screen bg-white p-6">
+        <Navigation />
+        <div className="mt-8 max-w-2xl">
+          <h1 className="text-xl font-bold">Missing intent amounts</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Provide `amount` and `price` query parameters (redirect from the OTC intent page).
+          </p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-col min-h-screen bg-white">
@@ -41,9 +48,6 @@ export default function SwapMatchingPage({ searchParams }: SwapMatchingPageProps
             direction,
             amount,
             priceThreshold: price,
-            sendChain,
-            receiveChain,
-            receiveWalletAddress,
           }}
         />
       </div>

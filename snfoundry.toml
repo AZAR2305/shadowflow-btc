@@ -1,6 +1,3 @@
 [sncast.sepolia]
 account = "shadowflow-testnet"
-
-[sncast.sepolia.provider]
-type = "cartridge"
-network = "sepolia"
+url = "https://api.cartridge.gg/x/starknet/sepolia"

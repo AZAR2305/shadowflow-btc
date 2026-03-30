@@ -246,59 +246,14 @@ export function useXverseWallet() {
     let publicKey = "";
 
     if (provider.request) {
-      // Match reference style first: provider.request("getAccounts")
+      const response = await tryXverseRequest(provider, "getAccounts");
+      accountCandidates = toStringArray(response);
+      
       try {
-        const response = await withTimeout(provider.request("getAccounts"));
-        const responseObj = response as { result?: { addresses?: Array<{ address?: string; publicKey?: string }> } };
-        const first = responseObj?.result?.addresses?.[0];
-        if (first?.address) {
-          setWallet({
-            address: first.address,
-            publicKey: first.publicKey ?? "",
-            connected: true,
-            provider: "xverse",
-          });
-          return;
-        }
+        const pubKeyResponse = await tryXverseRequest(provider, "getPublicKey");
+        publicKey = toPublicKey(pubKeyResponse);
       } catch {
-        // Fallback to broader compatibility methods below.
-      }
-
-      const methodAttempts: Array<{ method: string; params: unknown[] }> = [
-        { method: "getAccounts", params: [undefined, [], {}] },
-        { method: "getAddresses", params: [undefined, ["payment"], { purposes: ["payment"] }, [], {}] },
-        { method: "requestAccounts", params: [undefined, [], {}] },
-      ];
-
-      for (const attempt of methodAttempts) {
-        try {
-          const response = await tryXverseRequest(provider, attempt.method, attempt.params);
-          accountCandidates = toStringArray(response);
-          if (accountCandidates.length > 0) break;
-        } catch {
-          // Continue trying provider methods.
-        }
-      }
-    }
-
-    if (accountCandidates.length === 0 && provider.getAccounts) {
-      accountCandidates = toStringArray(await withTimeout(provider.getAccounts()));
-    }
-
-    if (accountCandidates.length === 0 && provider.connect) {
-      accountCandidates = toStringArray(await withTimeout(provider.connect()));
-    }
-
-    if (accountCandidates.length > 0 && provider.request) {
-      const pubKeyMethods = ["getPublicKey", "getPublicKeys", "getPubKey"];
-      for (const method of pubKeyMethods) {
-        try {
-          const response = await tryXverseRequest(provider, method, [undefined, [], {}]);
-          publicKey = toPublicKey(response);
-          if (publicKey) break;
-        } catch {
-          // Best-effort public key lookup.
-        }
+        // Public key is optional for display.
       }
     }
 
@@ -381,16 +336,16 @@ export function useXverseWallet() {
       if (!isMounted) return;
 
       try {
-        // Prefer Unisat first to avoid known Xverse extension popup crashes
-        if (unisatAvailable) {
-          await connectUnisatInternal();
+        // User flow priority: prefer Xverse first, then fallback to Unisat.
+        if (xverseAvailable) {
+          await connectXverseInternal();
           if (isMounted) {
             setRetryCount(0);
             setIsConnecting(false);
           }
           return;
-        } else if (xverseAvailable) {
-          await connectXverseInternal();
+        } else if (unisatAvailable) {
+          await connectUnisatInternal();
           if (isMounted) {
             setRetryCount(0);
             setIsConnecting(false);

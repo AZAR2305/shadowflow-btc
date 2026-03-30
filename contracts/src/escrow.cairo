@@ -130,6 +130,22 @@ mod EscrowContract {
         self.allowlist.read(wallet)
     }
 
+        // Removed from here: will be in impl block
+    }
+
+    // Attach helper/query methods to ContractState via impl block
+    impl EscrowContract of EscrowContractTrait {
+        #[external(v0)]
+        fn is_wallet_allowed(self: @ContractState, wallet: ContractAddress) -> bool {
+            self.allowlist.read(wallet)
+        }
+
+        #[external(v0)]
+        fn is_token_allowed(self: @ContractState, token: ContractAddress) -> bool {
+            self.token_allowlist.read(token)
+        }
+    }
+
     #[external(v0)]
     fn add_token_to_allowlist(ref self: ContractState, token: ContractAddress) {
         let caller = get_caller_address();

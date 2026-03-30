@@ -14,6 +14,7 @@
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import { selector } from "starknet";
 
 // Load .env.local
 const __filename = fileURLToPath(import.meta.url);
@@ -22,8 +23,45 @@ const envPath = path.join(__dirname, ".env.local");
 
 dotenv.config({ path: envPath });
 
-// Import the client
-import { ShadowFlowStarknetClient } from "./lib/starknetClient.js";
+async function starknetCall({
+  rpcUrl,
+  contractAddress,
+  entrypointName,
+  calldata = [],
+  blockTag = "latest",
+  id = 1,
+}) {
+  const entrypointSelector = selector.getSelectorFromName(entrypointName);
+
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "starknet_call",
+      params: [
+        {
+          contract_address: contractAddress,
+          entry_point_selector: entrypointSelector,
+          calldata,
+        },
+        blockTag,
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`RPC HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(`RPC error: ${data.error.message || JSON.stringify(data.error)}`);
+  }
+
+  return data.result;
+}
 
 const test = async () => {
   console.log("🧪 ShadowFlow Frontend Integration Test\n");
@@ -47,14 +85,15 @@ const test = async () => {
   }
 
   try {
-    // Create client
-    const client = new ShadowFlowStarknetClient(rpcUrl);
-    console.log("✅ Starknet Client initialized\n");
-
     // Test 1: Get Merkle Root from ShadowFlow
     console.log("📊 Test 1: Query ShadowFlow Contract State");
     console.log("   → Fetching current Merkle root...");
-    const merkleRoot = await client.getMerkleRoot();
+    const merkleRootRes = await starknetCall({
+      rpcUrl,
+      contractAddress: shadowflowAddress,
+      entrypointName: "get_merkle_root",
+    });
+    const merkleRoot = merkleRootRes?.[0];
     console.log(`   ✅ Merkle Root: ${merkleRoot}\n`);
 
     // Test 2: Verify proof on-chain
@@ -62,22 +101,35 @@ const test = async () => {
     console.log("   → Testing proof verification against GaragaVerifier...");
     
     // Use test values (proofs will be verified with whatever logic is on-chain)
-    const testProofHash = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const testPublicInputsHash = "0xfedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    // Use small felt252-safe values so Starknet RPC doesn't reject them as invalid calldata.
+    const testProofHash = "0x1";
+    const testPublicInputsHash = "0x2";
 
-    const result = await client.verifyProofOnChain(testProofHash, testPublicInputsHash);
+    const verifiedRes = await starknetCall({
+      rpcUrl,
+      contractAddress: verifierAddress,
+      entrypointName: "verify",
+      calldata: [testProofHash, testPublicInputsHash],
+    });
+    const isValid = verifiedRes?.[0] === "1" || verifiedRes?.[0] === 1;
     console.log(`   ✅ Verification Result:`);
-    console.log(`      Proof Hash:        ${result.proofHash}`);
-    console.log(`      Public Inputs:     ${result.publicInputsHash}`);
-    console.log(`      Is Valid:          ${result.isValid}`);
-    console.log(`      Timestamp:         ${new Date(result.timestamp).toISOString()}\n`);
+    console.log(`      Proof Hash:        ${testProofHash}`);
+    console.log(`      Public Inputs:     ${testPublicInputsHash}`);
+    console.log(`      Is Valid (view):   ${isValid}\n`);
 
     // Test 3: Check nullifier status
     console.log("🔍 Test 3: Nullifier Status Check");
     console.log("   → Checking if test nullifier has been spent...");
-    const testNullifier = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const isSpent = await client.isNullifierSpent(testNullifier);
-    console.log(`   ✅ Nullifier Spent: ${isSpent}\n`);
+    const testNullifier = "0x3";
+    const isSpentRes = await starknetCall({
+      rpcUrl,
+      contractAddress: shadowflowAddress,
+      entrypointName: "is_nullifier_spent",
+      calldata: [testNullifier],
+    });
+    const isSpent =
+      isSpentRes?.[0] === "true" || isSpentRes?.[0] === "1" || isSpentRes?.[0] === 1;
+    console.log(`   ✅ Nullifier Spent (view): ${isSpent}\n`);
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("✅ ALL TESTS PASSED!");

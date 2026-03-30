@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
     const btcPrice = await pythService.getPrice('BTC');
     const strkPrice = await pythService.getPrice('STRK');
 
-    const rate = parseFloat(btcPrice.price) / parseFloat(strkPrice.price);
+    const rate = btcPrice.formattedPrice / strkPrice.formattedPrice; // STRK per BTC
     const expectedStrkAmount = btcAmount * rate;
 
     if (expectedStrkAmount < minStrkReceive) {
@@ -62,47 +62,43 @@ export async function POST(request: NextRequest) {
     }
 
     // ============================================
-    // Step 2: Generate ZK proof of BTC commitment
-    // ============================================
-    const commitment = ZKProofService.generateCommitment(
-      btcAddress,
-      btcAmount,
-      'sell',
-      `buy-strk-${Date.now()}`
-    );
-    const nullifier = ZKProofService.generateNullifier(
-      btcAddress,
-      btcAmount,
-      `buy-strk-${Date.now()}`
-    );
-
-    // ============================================
     // Step 3: Execute full Web3 flow
     // ============================================
     const web3Service = Web3IntegrationService.getInstance();
 
+    const intentId = `buy-strk-${Date.now()}`
+    const zkProof = ZKProofService.generatePriceVerifiedIntentProof(
+      intentId,
+      btcAmount.toString(),
+      "btc",
+      expectedStrkAmount.toString(),
+      "strk",
+      rate,
+      btcAddress,
+      walletAddress,
+    );
+
     const executionResult = await web3Service.executeIntentWithFullFlow({
-      intentId: `buy-strk-${Date.now()}`,
+      intentId,
       sendAmount: btcAmount.toString(),
       sendChain: "btc",
       receiveAmount: expectedStrkAmount.toString(),
       receiveChain: "strk",
       senderWallet: btcAddress,
       receiverWallet: walletAddress,
-      senderSecret: secret,
-      receiveSecret: nullifier,
+      zkProof,
     });
 
     // ============================================
     // Return enriched response
     // ============================================
     return NextResponse.json({
-      transactionHash: (executionResult as any).proof?.hash || "0x0",
+      transactionHash: (executionResult as any).escrow?.transactionHash || "0x0",
       btcAmount,
       strkAmount: expectedStrkAmount,
       rate: rate.toFixed(2),
       status: executionResult.finalStatus || "pending",
-      proofHash: (executionResult as any).proof?.hash || commitment,
+      proofHash: (executionResult as any).proof?.onchainProofHash || (executionResult as any).proof?.offchainProof || "0x0",
       priceData: {
         btcPrice: parseFloat(btcPrice.price),
         strkPrice: parseFloat(strkPrice.price),

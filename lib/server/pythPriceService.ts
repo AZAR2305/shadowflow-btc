@@ -1,4 +1,3 @@
-import { EvmPriceServiceConnection, PriceFeed } from '@pythnetwork/pyth-evm-js';
 import NodeCache from 'node-cache';
 
 /**
@@ -8,7 +7,6 @@ import NodeCache from 'node-cache';
  */
 export class PythPriceService {
   private static instance: PythPriceService;
-  private priceServiceConnection: EvmPriceServiceConnection;
   private priceCache: NodeCache;
   private priceServiceUrl: string;
 
@@ -22,7 +20,6 @@ export class PythPriceService {
 
   private constructor() {
     this.priceServiceUrl = process.env.PYTH_PRICE_SERVICE_URL || 'https://hermes.pyth.network';
-    this.priceServiceConnection = new EvmPriceServiceConnection(this.priceServiceUrl);
 
     // Cache with 60 second TTL by default for real-time prices
     const cacheTTL = parseInt(process.env.PRICE_CACHE_TTL || '60');
@@ -47,14 +44,13 @@ export class PythPriceService {
         PythPriceService.PRICE_FEED_IDS['BTC'],
         PythPriceService.PRICE_FEED_IDS['STRK']
       ];
-      const testPrices = await this.priceServiceConnection.getLatestPriceFeeds(testPriceIds);
+      const testPrices = await this.fetchLatestParsed(testPriceIds);
 
       if (testPrices && testPrices.length > 0) {
         console.log('✅ Successfully connected to Pyth Network');
         testPrices.forEach((feed, idx) => {
           const symbol = idx === 0 ? 'BTC' : 'STRK';
-          const price = feed.getPriceUnchecked();
-          console.log(`📊 Test price (${symbol}): $${price.price} (expo: ${price.expo})`);
+          console.log(`📊 Test price (${symbol}): $${feed.price.price} (expo: ${feed.price.expo})`);
         });
       }
     } catch (error) {
@@ -84,14 +80,12 @@ export class PythPriceService {
     }
 
     try {
-      const priceFeeds = await this.priceServiceConnection.getLatestPriceFeeds([priceId]);
-
-      if (!priceFeeds || priceFeeds.length === 0) {
+      const parsed = await this.fetchLatestParsed([priceId]);
+      if (!parsed || parsed.length === 0) {
         throw new Error(`No price data returned for ${symbol}`);
       }
 
-      const priceFeed = priceFeeds[0];
-      const price = priceFeed.getPriceUnchecked();
+      const price = parsed[0].price;
 
       const priceData: PriceData = {
         symbol: upperSymbol,
@@ -99,7 +93,7 @@ export class PythPriceService {
         price: price.price.toString(),
         conf: price.conf.toString(),
         expo: price.expo,
-        publishTime: price.publishTime,
+        publishTime: price.publish_time,
         formattedPrice: this.formatPrice(price.price.toString(), price.expo)
       };
 
@@ -131,15 +125,20 @@ export class PythPriceService {
     });
 
     try {
-      const priceFeeds = await this.priceServiceConnection.getLatestPriceFeeds(priceIds);
-
-      if (!priceFeeds || priceFeeds.length === 0) {
+      const parsed = await this.fetchLatestParsed(priceIds);
+      if (!parsed || parsed.length === 0) {
         throw new Error("No price feeds returned for requested symbols");
       }
 
-      priceFeeds.forEach((priceFeed: PriceFeed, index: number) => {
+      const normalizeId = (id: string) => id.toLowerCase().replace(/^0x/, "");
+      const parsedById = new Map(parsed.map((p) => [normalizeId(p.id), p]));
+      priceIds.forEach((id, index) => {
         const symbol = normalized[index];
-        const price = priceFeed.getPriceUnchecked();
+        const feed = parsedById.get(normalizeId(id));
+        if (!feed) {
+          return;
+        }
+        const price = feed.price;
 
         const priceData: PriceData = {
           symbol,
@@ -147,7 +146,7 @@ export class PythPriceService {
           price: price.price.toString(),
           conf: price.conf.toString(),
           expo: price.expo,
-          publishTime: price.publishTime,
+          publishTime: price.publish_time,
           formattedPrice: this.formatPrice(price.price.toString(), price.expo)
         };
 
@@ -244,6 +243,29 @@ export class PythPriceService {
   public isSymbolSupported(symbol: string): boolean {
     return symbol.toUpperCase() in PythPriceService.PRICE_FEED_IDS;
   }
+
+  private async fetchLatestParsed(priceIds: string[]): Promise<HermesParsedPrice[]> {
+    const query = priceIds
+      .map((id) => `ids[]=${encodeURIComponent(id.replace(/^0x/, ""))}`)
+      .join("&");
+    const url = `${this.priceServiceUrl.replace(/\/+$/, "")}/v2/updates/price/latest?${query}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Pyth Hermes HTTP ${response.status}`);
+    }
+    const data = await response.json() as { parsed?: HermesParsedPrice[] };
+    return data.parsed ?? [];
+  }
+}
+
+interface HermesParsedPrice {
+  id: string;
+  price: {
+    price: string;
+    conf: string;
+    expo: number;
+    publish_time: number;
+  };
 }
 
 /**

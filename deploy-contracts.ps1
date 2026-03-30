@@ -166,8 +166,8 @@ Write-Host "  🔐 GaragaVerifier:        $($deployedAddresses['garaga_verifier'
 Write-Host "  📋 ShadowFlow:            $($deployedAddresses['shadowflow'])" -ForegroundColor Gray
 Write-Host "  🔒 Escrow:                $($deployedAddresses['escrow'])" -ForegroundColor Gray
 Write-Host "  💧 Liquidity Pool:        $($deployedAddresses['liquidity_pool'])" -ForegroundColor Gray
-Write-Host "  💲 Buy STRK (BTC→STRK):   $($deployedAddresses['buy_strk'])" -ForegroundColor Gray
-Write-Host "  💸 Sell STRK (STRK→BTC):  $($deployedAddresses['sell_strk'])" -ForegroundColor Gray
+Write-Host "  - Buy STRK (BTC->STRK):   $($deployedAddresses['buy_strk'])" -ForegroundColor Gray
+Write-Host "  - Sell STRK (STRK->BTC):  $($deployedAddresses['sell_strk'])" -ForegroundColor Gray
 Write-Host ""
 
 Write-Host "📝 Next Steps:" -ForegroundColor Cyan

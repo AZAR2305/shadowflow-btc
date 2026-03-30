@@ -38,12 +38,19 @@ export async function POST(request: Request) {
     }
 
     const amount = Number(body.amount ?? 0);
-    const priceThreshold = Number(body.priceThreshold ?? 0);
+    let priceThreshold = Number(body.priceThreshold ?? 0);
     const splitCount = Number(body.splitCount ?? 1);
     const depositAmount = Number(body.depositAmount ?? 0);
     const sendChain = body.sendChain ?? "strk";
     const receiveChain = body.receiveChain ?? "btc";
     const receiveWalletAddress = body.receiveWalletAddress ?? "";
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return NextResponse.json(
+        { error: "Missing or invalid amount (must be > 0)" },
+        { status: 400 },
+      );
+    }
 
     if (!receiveWalletAddress) {
       return NextResponse.json(
@@ -87,8 +94,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // Calculate conversion rate and verify stated price
-    const oracleRate = parseFloat(btcPrice.price) / parseFloat(strkPrice.price);
+    // Calculate conversion rate and verify stated price.
+    // statedRate must be in the same direction as the oracle:
+    //   statedRate = receiveAmount / sendAmount
+    // where send/receive chains are user-selected.
+    const oracleRate =
+      sendChain === "btc"
+        ? btcPrice.formattedPrice / strkPrice.formattedPrice // STRK per BTC
+        : strkPrice.formattedPrice / btcPrice.formattedPrice; // BTC per STRK
+
+    // If the client didn't provide (or provided 0) the receive amount,
+    // compute the oracle-equal CRT receive amount on the server.
+    if (!Number.isFinite(priceThreshold) || priceThreshold <= 0) {
+      priceThreshold = amount * oracleRate;
+    }
+
     const statedRate = priceThreshold / amount; // receiveAmount / sendAmount
 
     // Verify price is within 1% tolerance of oracle
@@ -134,7 +154,7 @@ export async function POST(request: Request) {
       amount.toString(),
       sendChain as 'btc' | 'strk',
       body.walletAddress,
-      zkProof.commitment
+      zkProof.proofHash
     );
 
     // ============================================
@@ -171,8 +191,7 @@ export async function POST(request: Request) {
         receiveChain: receiveChain as 'btc' | 'strk',
         senderWallet: body.walletAddress,
         receiverWallet: receiveWalletAddress,
-        senderSecret: zkProof.metadata?.sendSecret || '0x0',
-        receiveSecret: zkProof.metadata?.receiveSecret || '0x0',
+        zkProof,
       });
     } catch (web3Error) {
       console.error('Web3 execution error:', web3Error);
@@ -196,7 +215,7 @@ export async function POST(request: Request) {
         verified: zkProof.verified,
         commitment: zkProof.commitment,
         nullifier: zkProof.nullifier,
-        timestamp: zkProof.createdAt,
+        timestamp: zkProof.timestamp,
       },
       escrow: {
         transactionHash: escrowTx.transactionHash,

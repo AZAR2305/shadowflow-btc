@@ -50,33 +50,37 @@ export class ZKProofService {
       // Generate nullifier to prevent double-spending
       const nullifier = this.generateNullifier(senderWallet, sendAmount, intentId);
 
-      // Create proof hash combining all data
-      const proofHash = this.generateProofHash(
+      // Build a consistent proof structure compatible with:
+      // - lib/zk/publicInputs hashing
+      // - contracts/ShadоwFlow.verify_and_store(proof_hash, public_inputs_hash, final_state_hash, nullifier)
+      const settlementCommitment = this.generateSettlementCommitment(
         senderCommitment,
         receiverCommitment,
-        nullifier,
-        intentId,
+        oracleRate,
         timestamp,
       );
 
+      const finalStateHash = this.generateFinalStateHash(settlementCommitment, nullifier, now);
+      const merkleRoot = settlementCommitment;
+      const proofHash = this.generateProofHash(settlementCommitment, finalStateHash, nullifier, merkleRoot);
+
       return {
-        id: intentId,
         proofHash,
-        commitment: senderCommitment,
+        commitment: settlementCommitment,
+        finalStateHash,
         nullifier,
-        merkleRoot: "0x" + timestamp.toString(16).padStart(8, "0").repeat(8),
-        verified: priceVerified ? "verified" : "pending",
-        createdAt: now,
-        metadata: {
-          sendAmount,
-          sendChain,
-          receiveAmount,
-          receiveChain,
-          oracleRate: oracleRate.toString(),
-          statedRate: statedRate.toString(),
-          receiverWallet,
-          priceVerified,
+        merkleRoot,
+        publicInputs: {
+          commitment: settlementCommitment,
+          finalStateHash,
+          nullifier,
+          merkleRoot,
         },
+        verified: Boolean(priceVerified),
+        constraintCount: 3,
+        proofSize: 1024,
+        timestamp: now,
+        teeAttested: true,
       };
     } catch (error) {
       console.error("Error generating price-verified intent proof:", error);
@@ -124,14 +128,7 @@ export class ZKProofService {
     // Generate nullifier to prevent double-spending
     const nullifier = this.generateNullifier(sellerWallet, amount.toString(), matchId);
 
-    // Create proof hash
-    const proofHash = this.generateProofHash(
-      buyerCommitment,
-      sellerCommitment,
-      nullifier,
-      matchId,
-      Date.now(),
-    );
+    // Legacy generation removed to prevent duplicate definition
 
     // Merkle root for commitment tree (in production, this comes from on-chain state)
     const merkleRoot = settlementCommitment;

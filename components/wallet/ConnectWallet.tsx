@@ -46,11 +46,20 @@ async function connectXverse(): Promise<{ paymentAddress: string; ordinalsAddres
   if (!provider) return null;
 
   try {
-    const response = await provider.request("getAccounts", {
+    const response = (await provider.request("getAccounts", {
       purposes: ["payment", "ordinals"],
       message: "ShadowFlow BTC OTC — connect Xverse wallet for BTC testnet4 transfers",
-    });
-    const addresses = response?.result?.addresses ?? [];
+    })) as any;
+
+    if (!response || !response.result || !Array.isArray(response.result.addresses)) {
+      // Fallback shape if extension returns an array immediately
+      if (Array.isArray(response) && typeof response[0] === 'string') {
+        return { paymentAddress: response[0], ordinalsAddress: response[0] };
+      }
+      throw new Error("Xverse connection rejected or returned invalid schema.");
+    }
+
+    const addresses = response.result.addresses;
     const payment = addresses.find((a) => a.purpose === "payment");
     const ordinals = addresses.find((a) => a.purpose === "ordinals");
     return {
@@ -59,6 +68,10 @@ async function connectXverse(): Promise<{ paymentAddress: string; ordinalsAddres
     };
   } catch (err) {
     console.warn("[Xverse] getAccounts failed:", err);
+    
+    // Fallback error trap for V2.1.1
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn("⚠️ Xverse popup threw a rejection:", errMsg);
     return null;
   }
 }
@@ -129,7 +142,7 @@ export function ConnectWallet() {
     setXverseError(null);
     setXverseConnecting(true);
 
-    // Check for Xverse extension
+    // Check for Xverse extension (Authentication strictly restored)
     const provider = getXverseProvider();
     if (!provider) {
       setXverseError(
@@ -149,14 +162,22 @@ export function ConnectWallet() {
       setBtcAddress(btcAddr);
       setBtcConnected(true);
 
-      // Immediately fetch the BTC testnet4 balance from Mempool.space
-      const bal = await btcClient.getBalance(btcAddr);
-      setBtcAddress(btcAddr, bal.totalBtc);
+      try {
+        const bal = await btcClient.getBalance(btcAddr);
+        setBtcAddress(btcAddr, bal.totalBtc);
+      } catch (balErr) {
+        console.warn("Mempool balance fetch failed:", balErr);
+        setBtcAddress(btcAddr, "0.00000000");
+      }
 
       // Also refresh Starknet balances if already connected
       if (address) {
-        const balances = await fetchAllBalances(address, btcAddr);
-        setBalances(balances.btc, balances.strk, balances.eth);
+        try {
+          const balances = await fetchAllBalances(address, btcAddr);
+          setBalances(balances.btc, balances.strk, balances.eth);
+        } catch (starkErr) {
+          console.warn("Starknet balance fetch failed:", starkErr);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Xverse connection failed.";

@@ -198,6 +198,24 @@ export class OtcMatchingService {
     // - Their send chain = our receive chain
     // - Our send chain = their receive chain
     // - Amounts are compatible (within tolerance)
+    // - If multiple peers qualify, choose the closest amount match
+
+    const slippageTolerance = 0.05; // 5%
+    const relativeDifference = (expected: number, actual: number): number => {
+      if (!Number.isFinite(expected) || !Number.isFinite(actual) || expected <= 0) {
+        return Number.POSITIVE_INFINITY;
+      }
+      return Math.abs(actual - expected) / expected;
+    };
+
+    let bestMatch: {
+      intentA: string;
+      intentB: string;
+      partyA: OtcMatch['partyA'];
+      partyB: OtcMatch['partyB'];
+      score: number;
+      createdAt: number;
+    } | null = null;
 
     for (const [otherId, other] of this.pendingIntents) {
       if (otherId === intent.intentId) continue; // Don't match with self
@@ -210,17 +228,18 @@ export class OtcMatchingService {
 
       if (!isComplementary) continue;
 
-      // Check if amounts are compatible (allow 5% slippage)
+      // Check if amounts are compatible (allow 5% slippage on both sides)
       const otherSendNum = Number(other.sendAmount);
+      const otherReceiveNum = Number(other.receiveAmount);
+      const intentSendNum = Number(intent.sendAmount);
       const intentReceiveNum = Number(intent.receiveAmount);
-      const slippageTolerance = 0.05; // 5%
 
-      const sendMatch = Math.abs(otherSendNum - intentReceiveNum) / intentReceiveNum < slippageTolerance;
+      const sendGap = relativeDifference(intentReceiveNum, otherSendNum);
+      const receiveGap = relativeDifference(intentSendNum, otherReceiveNum);
 
-      if (!sendMatch) continue;
+      if (sendGap > slippageTolerance || receiveGap > slippageTolerance) continue;
 
-      // Found a match!
-      return {
+      const candidate = {
         intentA: intent.intentId,
         intentB: otherId,
         partyA: {
@@ -237,10 +256,35 @@ export class OtcMatchingService {
           receiveAmount: other.receiveAmount,
           receiveChain: other.receiveChain,
         },
+        score: (sendGap + receiveGap) / 2,
+        createdAt: other.createdAt,
       };
+
+      if (
+        !bestMatch ||
+        candidate.score < bestMatch.score ||
+        (candidate.score === bestMatch.score && candidate.createdAt < bestMatch.createdAt)
+      ) {
+        bestMatch = candidate;
+      }
     }
 
-    return null;
+    if (!bestMatch) {
+      return null;
+    }
+
+    console.log(`[OTC-Match] Closest peer selected within tolerance:`, {
+      intentId: intent.intentId.slice(0, 10),
+      matchIntentId: bestMatch.intentB.slice(0, 10),
+      score: bestMatch.score.toFixed(4),
+    });
+
+    return {
+      intentA: bestMatch.intentA,
+      intentB: bestMatch.intentB,
+      partyA: bestMatch.partyA,
+      partyB: bestMatch.partyB,
+    };
   }
 
   /**

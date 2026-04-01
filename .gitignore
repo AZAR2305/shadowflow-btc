@@ -39,3 +39,13 @@ next-env.d.ts
 
 # reference folder (archived/unused files)
 /reference/
+
+# documentation and scripts (development only)
+/docs/
+/tests/
+/blockchain/scripts/*.ps1
+/blockchain/scripts/*.sh
+
+# development files
+*.log
+*.tmp

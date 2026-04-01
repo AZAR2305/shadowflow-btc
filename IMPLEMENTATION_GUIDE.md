@@ -51,7 +51,7 @@ npm --version   # Should be v8 or higher
 ### Setup & Installation
 ```bash
 # 1. Navigate to project directory
-cd c:\Users\thame\shadowflow-BTC\shadowflow-btc
+cd c:\Users\thame\ShadowStark\ShadowStark
 
 # 2. Install dependencies
 npm install

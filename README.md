@@ -465,7 +465,7 @@ sequenceDiagram
     participant SC as Escrow<br/>Contract
     participant UB as User B<br/>(Starknet)
 
-    rect rgb(200, 220, 255)
+    rect rgb(70, 130, 220)
     Note over UA,UB: PHASE 1: Intent Creation
     UA->>FE: Create swap intent<br/>0.0001 BTC → 0.37 STRK
     FE->>UA: Sign message with Xverse
@@ -476,7 +476,7 @@ sequenceDiagram
     FE-->>UA: Awaiting counterparty...
     end
 
-    rect rgb(220, 255, 220)
+    rect rgb(34, 180, 76)
     Note over UA,UB: PHASE 2: Intent Matching
     MATCH->>API: Poll for matchable intents
     API->>MATCH: Intent from User A found
@@ -486,7 +486,7 @@ sequenceDiagram
     UB->>FE: Match notification received
     end
 
-    rect rgb(255, 240, 200)
+    rect rgb(255, 170, 0)
     Note over UA,UB: PHASE 3: Both Users Sign
     UA->>FE: Click sign match
     FE->>UA: Sign with Xverse
@@ -500,7 +500,7 @@ sequenceDiagram
     MATCH->>MATCH: status = "both_signed"
     end
 
-    rect rgb(255, 220, 200)
+    rect rgb(220, 100, 50)
     Note over UA,UB: PHASE 4: Escrow Funding
     UA->>FE: Fund escrow with 0.0001 BTC
     FE->>UA: Sign escrow funding
@@ -517,7 +517,7 @@ sequenceDiagram
     API->>MATCH: status = "escrow_funded"
     end
 
-    rect rgb(200, 255, 200)
+    rect rgb(76, 175, 80)
     Note over UA,UB: PHASE 5: Atomic Settlement
     API->>SC: Execute settlement
     SC->>SC: Transfer 0.0001 BTC to User B

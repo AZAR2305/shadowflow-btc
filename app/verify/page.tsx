@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 interface CheckResult {
@@ -15,7 +15,7 @@ interface CheckResult {
   chainVerification: { verified: boolean; error?: string } | null;
 }
 
-export default function VerifyPage() {
+function VerifyPageContent() {
   const searchParams = useSearchParams();
   const [hashInput, setHashInput] = useState("");
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -129,5 +129,22 @@ export default function VerifyPage() {
         </section>
       ) : null}
     </main>
+  );
+}
+
+export default function VerifyPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="space-y-4 p-4">
+          <section className="rounded-xl border border-border bg-surface p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-muted">Proof Checker</p>
+            <h1 className="font-heading text-2xl font-semibold text-foreground">Loading…</h1>
+          </section>
+        </main>
+      }
+    >
+      <VerifyPageContent />
+    </Suspense>
   );
 }

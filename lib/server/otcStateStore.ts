@@ -3,7 +3,8 @@ import path from "node:path";
 
 import { hash } from "starknet";
 
-import type { ExecutionLog, OtcLifecycleStatus, OtcMatchRecord, TEEAttestation, TradeRecord, ZKProof } from "@/types";
+import type { ExecutionLog, OtcLifecycleStatus, OtcMatchRecord, TEEAttestation, TradeRecord, ZKProof, ChainType, CrossChainInfo } from "@/types";
+import { CrossChainService } from "./crossChainService";
 
 type Direction = "buy" | "sell";
 type StrategyTemplate = "simple" | "split" | "guarded";
@@ -45,6 +46,10 @@ interface OtcOrder {
   commitment: string;
   strategyId: string;
   tradeId: string;
+  sendChain: ChainType;
+  receiveChain: ChainType;
+  receiveWalletAddress: string;
+  onChainIntentTxHash?: string;
 }
 
 interface OrderBook {
@@ -68,6 +73,9 @@ interface SubmitIntentPayload {
   selectedPath: string;
   depositConfirmed: boolean;
   depositAmount: number;
+  sendChain: ChainType;
+  receiveChain: ChainType;
+  receiveWalletAddress: string;
 }
 
 const STATE_PATH = path.join(process.cwd(), "proofs", "otc-state.json");
@@ -153,8 +161,22 @@ function makeCommitment(walletAddress: string, amount: number, direction: Direct
   const amountScaled = `0x${Math.round(amount * 100_000_000).toString(16)}`;
   const dirTag = direction === "buy" ? "0x1" : "0x2";
   const pathTag = `0x${Buffer.from(selectedPath).toString("hex").slice(0, 60) || "0"}`;
+  const walletTag = `0x${Buffer.from(walletAddress).toString("hex").slice(0, 60) || "0"}`;
 
-  return hash.computePoseidonHashOnElements([walletAddress, amountScaled, dirTag, pathTag, nowHex]);
+  return hash.computePoseidonHashOnElements([walletTag, amountScaled, dirTag, pathTag, nowHex]);
+}
+
+function generateOnChainIntentHash(walletAddress: string, direction: Direction, amount: number, sendChain: ChainType, receiveChain: ChainType, receiveWalletAddress: string): string {
+  return CrossChainService.generateOnChainIntentHash(walletAddress, direction, amount, sendChain, receiveChain, receiveWalletAddress);
+}
+
+function createCrossChainInfo(order: OtcOrder): CrossChainInfo {
+  return {
+    sendChain: order.sendChain,
+    receiveChain: order.receiveChain,
+    receiveWalletAddress: order.receiveWalletAddress,
+    onChainIntentTxHash: order.onChainIntentTxHash,
+  };
 }
 
 function toNumber(value: string): number {
@@ -168,6 +190,14 @@ function getOrCreateWallet(state: OtcState, walletAddress: string): WalletState 
     state.wallets[key] = makeDefaultWalletState();
   }
   return state.wallets[key];
+}
+
+function ensureMatchFlags(match: OtcMatchRecord): OtcMatchRecord {
+  return {
+    ...match,
+    buyerConfirmed: Boolean(match.buyerConfirmed),
+    sellerConfirmed: Boolean(match.sellerConfirmed),
+  };
 }
 
 function findStrategy(wallet: WalletState, strategyId: string): StrategySummary {
@@ -196,11 +226,16 @@ function applyMatchedStatus(
   settlementCommitment: string,
   proofHash: string,
   matchedAmount: number,
+  settlementFinalized: boolean,
 ): void {
   const strategy = findStrategy(wallet, strategyId);
   const trade = findTrade(wallet, tradeId);
 
-  const status = statusFromAmounts(totalAmount, remainingAmount);
+  const status = settlementFinalized
+    ? statusFromAmounts(totalAmount, remainingAmount)
+    : remainingAmount < totalAmount
+      ? "matched"
+      : "open";
   strategy.status = status;
   trade.status = status;
   trade.remainingAmount = Number(remainingAmount.toFixed(8));
@@ -243,6 +278,39 @@ function addExecutionLogs(
 
 function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
   const matchedRecords: OtcMatchRecord[] = [];
+  const impliedBtcPerStrk = (order: OtcOrder): number | null => {
+    if (order.amount <= 0 || order.priceThreshold <= 0) return null;
+    if (order.sendChain === "strk" && order.receiveChain === "btc") {
+      return order.priceThreshold / order.amount;
+    }
+    if (order.sendChain === "btc" && order.receiveChain === "strk") {
+      return order.amount / order.priceThreshold;
+    }
+    return null;
+  };
+  const toBtc = (sendAmount: number, sendChain: ChainType, btcPerStrk: number): number => {
+    if (sendChain === "btc") return sendAmount;
+    return sendAmount * btcPerStrk;
+  };
+  const fromBtc = (btcAmount: number, sendChain: ChainType, btcPerStrk: number): number => {
+    if (sendChain === "btc") return btcAmount;
+    if (btcPerStrk <= 0) return 0;
+    return btcAmount / btcPerStrk;
+  };
+  const receiveFromSend = (order: OtcOrder, executedSendAmount: number): number => {
+    if (order.amount <= 0) return 0;
+    return executedSendAmount * (order.priceThreshold / order.amount);
+  };
+  const creditReceive = (wallet: WalletState, chain: ChainType, amount: number): void => {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (chain === "btc") {
+      const btc = toNumber(wallet.balances.btcBalance);
+      wallet.balances.btcBalance = (btc + amount).toFixed(8);
+      return;
+    }
+    const strk = toNumber(wallet.balances.strkBalance);
+    wallet.balances.strkBalance = (strk + amount).toFixed(4);
+  };
 
   const oppositeBook = incoming.direction === "buy" ? state.orderBook.sell : state.orderBook.buy;
   oppositeBook.sort((a, b) => a.createdAt - b.createdAt);
@@ -260,21 +328,45 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       continue;
     }
 
+    const reversePair =
+      incoming.sendChain === candidate.receiveChain &&
+      incoming.receiveChain === candidate.sendChain;
+    const samePair =
+      incoming.sendChain === candidate.sendChain &&
+      incoming.receiveChain === candidate.receiveChain;
+    if (!reversePair && !samePair) {
+      index += 1;
+      continue;
+    }
+
     const buyOrder = incoming.direction === "buy" ? incoming : candidate;
     const sellOrder = incoming.direction === "sell" ? incoming : candidate;
 
-    if (buyOrder.priceThreshold < sellOrder.priceThreshold) {
+    const buyRate = impliedBtcPerStrk(buyOrder);
+    const sellRate = impliedBtcPerStrk(sellOrder);
+    if (buyRate === null || sellRate === null) {
       index += 1;
       continue;
     }
 
-    const fillAmount = Math.min(incoming.remainingAmount, candidate.remainingAmount);
-    if (fillAmount <= 0) {
+    if (buyRate < sellRate) {
       index += 1;
       continue;
     }
 
-    const executionPrice = Number(((buyOrder.priceThreshold + sellOrder.priceThreshold) / 2).toFixed(2));
+    const incomingBtc = toBtc(incoming.remainingAmount, incoming.sendChain, incoming.direction === "buy" ? buyRate : sellRate);
+    const candidateBtc = toBtc(candidate.remainingAmount, candidate.sendChain, candidate.direction === "buy" ? buyRate : sellRate);
+    const fillBtc = Math.min(incomingBtc, candidateBtc);
+    if (fillBtc <= 0) {
+      index += 1;
+      continue;
+    }
+
+    const incomingExecutedSend = fromBtc(fillBtc, incoming.sendChain, incoming.direction === "buy" ? buyRate : sellRate);
+    const candidateExecutedSend = fromBtc(fillBtc, candidate.sendChain, candidate.direction === "buy" ? buyRate : sellRate);
+    const fillAmount = incoming.direction === "buy" ? incomingExecutedSend : candidateExecutedSend;
+
+    const executionPrice = Number(((buyRate + sellRate) / 2).toFixed(12)); // BTC per STRK
     const now = Date.now();
     const settlementCommitment = makeCommitment(
       buyOrder.walletAddress,
@@ -284,17 +376,15 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
     );
     const proofHash = settlementCommitment;
 
-    incoming.remainingAmount = Number((incoming.remainingAmount - fillAmount).toFixed(8));
-    candidate.remainingAmount = Number((candidate.remainingAmount - fillAmount).toFixed(8));
+    incoming.remainingAmount = Number((incoming.remainingAmount - incomingExecutedSend).toFixed(8));
+    candidate.remainingAmount = Number((candidate.remainingAmount - candidateExecutedSend).toFixed(8));
 
     const buyerWallet = getOrCreateWallet(state, buyOrder.walletAddress);
     const sellerWallet = getOrCreateWallet(state, sellOrder.walletAddress);
 
-    const buyerBtc = toNumber(buyerWallet.balances.btcBalance);
-    buyerWallet.balances.btcBalance = (buyerBtc + fillAmount).toFixed(4);
-
-    const sellerStrk = toNumber(sellerWallet.balances.strkBalance);
-    sellerWallet.balances.strkBalance = (sellerStrk + fillAmount).toFixed(2);
+    // Credit what each side receives, based on each order's stated receive ratio.
+    creditReceive(buyerWallet, buyOrder.receiveChain, receiveFromSend(buyOrder, incoming.direction === "buy" ? incomingExecutedSend : candidateExecutedSend));
+    creditReceive(sellerWallet, sellOrder.receiveChain, receiveFromSend(sellOrder, incoming.direction === "sell" ? incomingExecutedSend : candidateExecutedSend));
 
     applyMatchedStatus(
       buyerWallet,
@@ -306,6 +396,7 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       settlementCommitment,
       proofHash,
       fillAmount,
+      false,
     );
     applyMatchedStatus(
       sellerWallet,
@@ -317,9 +408,10 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       settlementCommitment,
       proofHash,
       fillAmount,
+      false,
     );
 
-    const matchStatus = buyOrder.remainingAmount === 0 && sellOrder.remainingAmount === 0 ? "settled" : "matched";
+    const matchStatus = "matched";
     const matchRecord: OtcMatchRecord = {
       id: nextId("match"),
       buyerWallet: buyOrder.walletAddress,
@@ -331,7 +423,13 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       createdAt: now,
       settlementCommitment,
       proofHash,
+      buyerConfirmed: false,
+      sellerConfirmed: false,
       status: matchStatus,
+      buyerCrossChain: createCrossChainInfo(buyOrder),
+      sellerCrossChain: createCrossChainInfo(sellOrder),
+      buyerEscrowConfirmed: false,
+      sellerEscrowConfirmed: false,
     };
 
     state.matches.unshift(matchRecord);
@@ -344,7 +442,7 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       buyOrder.selectedPath,
       maskAmount(fillAmount),
       now,
-      matchStatus === "settled" ? "SETTLED" : "MATCH",
+      "MATCH",
     );
     addExecutionLogs(
       sellerWallet,
@@ -352,7 +450,7 @@ function tryMatchOrder(state: OtcState, incoming: OtcOrder): OtcMatchRecord[] {
       sellOrder.selectedPath,
       maskAmount(fillAmount),
       now,
-      matchStatus === "settled" ? "SETTLED" : "MATCH",
+      "MATCH",
     );
 
     const attestation: TEEAttestation = {
@@ -431,7 +529,27 @@ export async function listTrades(walletAddress: string): Promise<TradeRecord[]> 
 
 export async function listMatches(walletAddress: string): Promise<OtcMatchRecord[]> {
   const { wallet } = await getOrCreateWalletState(walletAddress);
-  return wallet.matches.sort((a, b) => b.createdAt - a.createdAt);
+  return wallet.matches
+    .map((match) => ensureMatchFlags(match))
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function loadMatchById(matchId: string): Promise<OtcMatchRecord | null> {
+  const state = await loadState();
+  const directMatch = state.matches.find((m) => m.id === matchId);
+  if (directMatch) {
+    return ensureMatchFlags(directMatch);
+  }
+
+  // Fallback for older state where matches may only exist under wallet scopes.
+  for (const wallet of Object.values(state.wallets)) {
+    const scopedMatch = wallet.matches.find((m) => m.id === matchId);
+    if (scopedMatch) {
+      return ensureMatchFlags(scopedMatch);
+    }
+  }
+
+  return null;
 }
 
 export async function listExecutionLogs(walletAddress: string): Promise<ExecutionLog[]> {
@@ -464,12 +582,13 @@ export async function submitIntent(payload: SubmitIntentPayload): Promise<{
   const btcBalance = toNumber(wallet.balances.btcBalance);
   const strkBalance = toNumber(wallet.balances.strkBalance);
 
-  if (payload.direction === "sell" && btcBalance < payload.depositAmount) {
-    throw new Error("Insufficient BTC balance for SELL intent reservation.");
+  // Reserve against the chain the user is actually sending from.
+  if (payload.sendChain === "btc" && btcBalance < payload.depositAmount) {
+    throw new Error("Insufficient BTC balance for intent reservation.");
   }
 
-  if (payload.direction === "buy" && strkBalance < payload.depositAmount) {
-    throw new Error("Insufficient STRK balance for BUY intent reservation.");
+  if (payload.sendChain === "strk" && strkBalance < payload.depositAmount) {
+    throw new Error("Insufficient STRK balance for intent reservation.");
   }
 
   const createdAt = Date.now();
@@ -516,6 +635,10 @@ export async function submitIntent(payload: SubmitIntentPayload): Promise<{
     commitment,
     strategyId: strategy.id,
     tradeId: trade.id,
+    sendChain: payload.sendChain,
+    receiveChain: payload.receiveChain,
+    receiveWalletAddress: payload.receiveWalletAddress,
+    onChainIntentTxHash: generateOnChainIntentHash(payload.walletAddress, payload.direction, payload.amount, payload.sendChain, payload.receiveChain, payload.receiveWalletAddress),
   };
 
   updateBalancesForIntent(wallet, payload);
@@ -549,4 +672,376 @@ export async function submitIntent(payload: SubmitIntentPayload): Promise<{
     matches,
     proof: refreshedWallet.latestProof,
   };
+}
+
+export async function confirmMatchParticipant(matchId: string, walletAddress: string): Promise<OtcMatchRecord> {
+  const state = await loadState();
+  const match = state.matches.find((item) => item.id === matchId);
+
+  if (!match) {
+    throw new Error(`Match not found: ${matchId}`);
+  }
+
+  if (match.status === "settled") {
+    return ensureMatchFlags(match);
+  }
+
+  const normalizedWallet = toKey(walletAddress);
+  const buyerKey = toKey(match.buyerWallet);
+  const sellerKey = toKey(match.sellerWallet);
+
+  if (normalizedWallet !== buyerKey && normalizedWallet !== sellerKey) {
+    throw new Error("Wallet is not a participant of this match.");
+  }
+
+  if (normalizedWallet === buyerKey) {
+    match.buyerConfirmed = true;
+  }
+
+  if (normalizedWallet === sellerKey) {
+    match.sellerConfirmed = true;
+  }
+
+  const updated = ensureMatchFlags(match);
+
+  const buyerWallet = getOrCreateWallet(state, match.buyerWallet);
+  const sellerWallet = getOrCreateWallet(state, match.sellerWallet);
+
+  buyerWallet.matches = buyerWallet.matches.map((item) =>
+    item.id === matchId
+      ? { ...item, buyerConfirmed: updated.buyerConfirmed, sellerConfirmed: updated.sellerConfirmed }
+      : item,
+  );
+  sellerWallet.matches = sellerWallet.matches.map((item) =>
+    item.id === matchId
+      ? { ...item, buyerConfirmed: updated.buyerConfirmed, sellerConfirmed: updated.sellerConfirmed }
+      : item,
+  );
+
+  await saveState(state);
+  return updated;
+}
+
+export async function settleMatch(matchId: string, walletAddress?: string): Promise<OtcMatchRecord> {
+  const state = await loadState();
+  const match = state.matches.find((item) => item.id === matchId);
+
+  if (!match) {
+    throw new Error(`Match not found: ${matchId}`);
+  }
+
+  if (walletAddress) {
+    const key = toKey(walletAddress);
+    const buyerKey = toKey(match.buyerWallet);
+    const sellerKey = toKey(match.sellerWallet);
+    if (key !== buyerKey && key !== sellerKey) {
+      throw new Error("Wallet is not a participant of this match.");
+    }
+  }
+
+  if (match.status === "settled") {
+    return ensureMatchFlags(match);
+  }
+
+  if (!match.buyerConfirmed || !match.sellerConfirmed) {
+    throw new Error("Both buyer and seller confirmations are required before settlement.");
+  }
+
+  match.status = "settled";
+  match.buyerConfirmed = true;
+  match.sellerConfirmed = true;
+
+  const buyerWallet = getOrCreateWallet(state, match.buyerWallet);
+  const sellerWallet = getOrCreateWallet(state, match.sellerWallet);
+
+  buyerWallet.matches = buyerWallet.matches.map((item) =>
+    item.id === matchId
+      ? { ...item, status: "settled", buyerConfirmed: true, sellerConfirmed: true }
+      : item,
+  );
+  sellerWallet.matches = sellerWallet.matches.map((item) =>
+    item.id === matchId
+      ? { ...item, status: "settled", buyerConfirmed: true, sellerConfirmed: true }
+      : item,
+  );
+
+  const buyerTrade = buyerWallet.trades.find((item) => item.id === match.buyTradeId);
+  if (buyerTrade) {
+    buyerTrade.status = (buyerTrade.remainingAmount ?? 0) <= 0 ? "settled" : "matched";
+    const buyerStrategy = buyerWallet.strategies.find((item) => item.commitment === buyerTrade.commitment);
+    if (buyerStrategy) {
+      buyerStrategy.status = buyerTrade.status;
+    }
+  }
+
+  const sellerTrade = sellerWallet.trades.find((item) => item.id === match.sellTradeId);
+  if (sellerTrade) {
+    sellerTrade.status = (sellerTrade.remainingAmount ?? 0) <= 0 ? "settled" : "matched";
+    const sellerStrategy = sellerWallet.strategies.find((item) => item.commitment === sellerTrade.commitment);
+    if (sellerStrategy) {
+      sellerStrategy.status = sellerTrade.status;
+    }
+  }
+
+  await saveState(state);
+  return ensureMatchFlags(match);
+}
+
+export async function clearOtcState(scope: "all" | "wallet", walletAddress?: string): Promise<{ cleared: string }> {
+  const state = await loadState();
+
+  if (scope === "all" || !walletAddress) {
+    state.wallets = {};
+    state.orderBook = { buy: [], sell: [] };
+    state.matches = [];
+    await saveState(state);
+    return { cleared: "all" };
+  }
+
+  const walletKey = toKey(walletAddress);
+
+  delete state.wallets[walletKey];
+  state.orderBook.buy = state.orderBook.buy.filter((item) => toKey(item.walletAddress) !== walletKey);
+  state.orderBook.sell = state.orderBook.sell.filter((item) => toKey(item.walletAddress) !== walletKey);
+  state.matches = state.matches.filter(
+    (item) => toKey(item.buyerWallet) !== walletKey && toKey(item.sellerWallet) !== walletKey,
+  );
+
+  for (const key of Object.keys(state.wallets)) {
+    const wallet = state.wallets[key];
+    wallet.matches = wallet.matches.filter(
+      (item) => toKey(item.buyerWallet) !== walletKey && toKey(item.sellerWallet) !== walletKey,
+    );
+  }
+
+  await saveState(state);
+  return { cleared: walletKey };
+}
+
+export async function confirmEscrowDeposit(matchId: string, walletAddress: string): Promise<OtcMatchRecord> {
+  const state = await loadState();
+  const match = state.matches.find((item) => item.id === matchId);
+
+  if (!match) {
+    throw new Error(`Match not found: ${matchId}`);
+  }
+
+  const normalizedWallet = toKey(walletAddress);
+  const buyerKey = toKey(match.buyerWallet);
+  const sellerKey = toKey(match.sellerWallet);
+
+  if (normalizedWallet === buyerKey) {
+    match.buyerEscrowConfirmed = true;
+    // Generate realistic escrow transaction hash using CrossChainService
+    const escrowTxHash = CrossChainService.generateEscrowTransactionHash(
+      matchId,
+      match.buyerWallet,
+      match.amount,
+      match.buyerCrossChain.sendChain,
+    );
+    match.buyerCrossChain.escrowTxHash = escrowTxHash;
+  } else if (normalizedWallet === sellerKey) {
+    match.sellerEscrowConfirmed = true;
+    // Generate realistic escrow transaction hash using CrossChainService
+    const escrowTxHash = CrossChainService.generateEscrowTransactionHash(
+      matchId,
+      match.sellerWallet,
+      match.amount,
+      match.sellerCrossChain.sendChain,
+    );
+    match.sellerCrossChain.escrowTxHash = escrowTxHash;
+  } else {
+    throw new Error("Wallet is not a participant of this match.");
+  }
+
+  const updated = ensureMatchFlags(match);
+  const buyerWallet = getOrCreateWallet(state, match.buyerWallet);
+  const sellerWallet = getOrCreateWallet(state, match.sellerWallet);
+
+  buyerWallet.matches = buyerWallet.matches.map((item) =>
+    item.id === matchId
+      ? {
+          ...item,
+          buyerEscrowConfirmed: updated.buyerEscrowConfirmed,
+          sellerEscrowConfirmed: updated.sellerEscrowConfirmed,
+          buyerCrossChain: updated.buyerCrossChain,
+          sellerCrossChain: updated.sellerCrossChain,
+        }
+      : item,
+  );
+  sellerWallet.matches = sellerWallet.matches.map((item) =>
+    item.id === matchId
+      ? {
+          ...item,
+          buyerEscrowConfirmed: updated.buyerEscrowConfirmed,
+          sellerEscrowConfirmed: updated.sellerEscrowConfirmed,
+          buyerCrossChain: updated.buyerCrossChain,
+          sellerCrossChain: updated.sellerCrossChain,
+        }
+      : item,
+  );
+
+  await saveState(state);
+  return updated;
+}
+
+export async function settleMatchWithCrossChain(matchId: string, walletAddress?: string): Promise<OtcMatchRecord> {
+  const state = await loadState();
+  const match = state.matches.find((item) => item.id === matchId);
+
+  if (!match) {
+    throw new Error(`Match not found: ${matchId}`);
+  }
+
+  if (walletAddress) {
+    const key = toKey(walletAddress);
+    const buyerKey = toKey(match.buyerWallet);
+    const sellerKey = toKey(match.sellerWallet);
+    if (key !== buyerKey && key !== sellerKey) {
+      throw new Error("Wallet is not a participant of this match.");
+    }
+  }
+
+  if (match.status === "settled") {
+    return ensureMatchFlags(match);
+  }
+
+  if (!match.buyerConfirmed || !match.sellerConfirmed) {
+    throw new Error("Both buyer and seller confirmations are required before settlement.");
+  }
+
+  if (!match.buyerEscrowConfirmed || !match.sellerEscrowConfirmed) {
+    throw new Error("Both escrow deposits must be confirmed before settlement.");
+  }
+
+  match.status = "settled";
+  match.buyerConfirmed = true;
+  match.sellerConfirmed = true;
+
+  // Validate wallet addresses
+  if (!CrossChainService.validateWalletAddress(match.buyerCrossChain.receiveWalletAddress, match.buyerCrossChain.receiveChain)) {
+    throw new Error(`Invalid buyer receive wallet address for ${match.buyerCrossChain.receiveChain}`);
+  }
+
+  if (!CrossChainService.validateWalletAddress(match.sellerCrossChain.receiveWalletAddress, match.sellerCrossChain.receiveChain)) {
+    throw new Error(`Invalid seller receive wallet address for ${match.sellerCrossChain.receiveChain}`);
+  }
+
+  // Create settlement routing plan using CrossChainService
+  const { buyerSettlement, sellerSettlement } = CrossChainService.createSettlementRoutingPlan(
+    match.buyerWallet,
+    match.sellerWallet,
+    match.buyerCrossChain.sendChain,
+    match.buyerCrossChain.receiveChain,
+    match.buyerCrossChain.receiveWalletAddress,
+    match.sellerCrossChain.sendChain,
+    match.sellerCrossChain.receiveChain,
+    match.sellerCrossChain.receiveWalletAddress,
+    match.amount,
+  );
+
+  // Set match ID for routing
+  buyerSettlement.matchId = matchId;
+  sellerSettlement.matchId = matchId;
+
+  // Generate settlement transaction hashes
+  buyerSettlement.txHash = CrossChainService.generateSettlementTransactionHash(
+    matchId,
+    buyerSettlement.fromWallet,
+    buyerSettlement.toWallet,
+    buyerSettlement.amount,
+    buyerSettlement.toChain,
+  );
+
+  sellerSettlement.txHash = CrossChainService.generateSettlementTransactionHash(
+    matchId,
+    sellerSettlement.fromWallet,
+    sellerSettlement.toWallet,
+    sellerSettlement.amount,
+    sellerSettlement.toChain,
+  );
+
+  // Mark settlements as completed
+  buyerSettlement.status = "completed";
+  sellerSettlement.status = "completed";
+  buyerSettlement.completedAt = Date.now();
+  sellerSettlement.completedAt = Date.now();
+
+  // Update cross-chain info with settlement transaction hashes
+  match.buyerCrossChain.settlementTxHash = buyerSettlement.txHash;
+  match.sellerCrossChain.settlementTxHash = sellerSettlement.txHash;
+
+  // Add settlement transfer info to match
+  match.buyerSettlement = {
+    fromWallet: buyerSettlement.fromWallet,
+    toWallet: buyerSettlement.toWallet,
+    fromChain: buyerSettlement.fromChain,
+    toChain: buyerSettlement.toChain,
+    amount: buyerSettlement.amount,
+    txHash: buyerSettlement.txHash,
+    status: buyerSettlement.status as "completed",
+  };
+
+  match.sellerSettlement = {
+    fromWallet: sellerSettlement.fromWallet,
+    toWallet: sellerSettlement.toWallet,
+    fromChain: sellerSettlement.fromChain,
+    toChain: sellerSettlement.toChain,
+    amount: sellerSettlement.amount,
+    txHash: sellerSettlement.txHash,
+    status: sellerSettlement.status as "completed",
+  };
+
+  const buyerWallet = getOrCreateWallet(state, match.buyerWallet);
+  const sellerWallet = getOrCreateWallet(state, match.sellerWallet);
+
+  buyerWallet.matches = buyerWallet.matches.map((item) =>
+    item.id === matchId
+      ? {
+          ...item,
+          status: "settled" as const,
+          buyerConfirmed: true,
+          sellerConfirmed: true,
+          buyerCrossChain: match.buyerCrossChain,
+          sellerCrossChain: match.sellerCrossChain,
+          buyerSettlement: match.buyerSettlement,
+          sellerSettlement: match.sellerSettlement,
+        }
+      : item,
+  );
+  sellerWallet.matches = sellerWallet.matches.map((item) =>
+    item.id === matchId
+      ? {
+          ...item,
+          status: "settled" as const,
+          buyerConfirmed: true,
+          sellerConfirmed: true,
+          buyerCrossChain: match.buyerCrossChain,
+          sellerCrossChain: match.sellerCrossChain,
+          buyerSettlement: match.buyerSettlement,
+          sellerSettlement: match.sellerSettlement,
+        }
+      : item,
+  );
+
+  const buyerTrade = buyerWallet.trades.find((item) => item.id === match.buyTradeId);
+  if (buyerTrade) {
+    buyerTrade.status = (buyerTrade.remainingAmount ?? 0) <= 0 ? "settled" : "matched";
+    const buyerStrategy = buyerWallet.strategies.find((item) => item.commitment === buyerTrade.commitment);
+    if (buyerStrategy) {
+      buyerStrategy.status = buyerTrade.status;
+    }
+  }
+
+  const sellerTrade = sellerWallet.trades.find((item) => item.id === match.sellTradeId);
+  if (sellerTrade) {
+    sellerTrade.status = (sellerTrade.remainingAmount ?? 0) <= 0 ? "settled" : "matched";
+    const sellerStrategy = sellerWallet.strategies.find((item) => item.commitment === sellerTrade.commitment);
+    if (sellerStrategy) {
+      sellerStrategy.status = sellerTrade.status;
+    }
+  }
+
+  await saveState(state);
+  return ensureMatchFlags(match);
 }

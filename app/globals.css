@@ -3,150 +3,73 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-  --bg-void: #04040a;
-  --bg-base: #080812;
-  --bg-surface: #0e0e1c;
-  --bg-elevated: #141428;
-  --bg-highlight: #1a1a35;
-
-  --node-condition: #06b6d4;
-  --node-condition-bg: #06b6d408;
-  --node-condition-border: #06b6d440;
-
-  --node-split: #f59e0b;
-  --node-split-bg: #f59e0b08;
-  --node-split-border: #f59e0b40;
-
-  --node-execute: #10b981;
-  --node-execute-bg: #10b98108;
-  --node-execute-border: #10b98140;
-
-  --node-constraint: #8b5cf6;
-  --node-constraint-bg: #8b5cf608;
-  --node-constraint-border: #8b5cf640;
-
-  --color-private: #ef4444;
-  --color-public: #10b981;
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
-  --color-btc: #f7931a;
-  --color-proof: #a855f7;
-
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #475569;
-  --text-code: #7dd3fc;
+  --background: #f4f7fb;
+  --foreground: #101420;
+  --card: #ffffff;
+  --card-foreground: #101420;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0f4f87;
+  --primary-foreground: #fafafa;
+  --secondary: #e9eff8;
+  --secondary-foreground: #1c2536;
+  --muted: #edf3fb;
+  --muted-foreground: #717171;
+  --accent: #e8f4ff;
+  --accent-foreground: #10253f;
+  --destructive: #e7000b;
+  --destructive-foreground: #f5f5f5;
+  --border: #d5dfec;
+  --input: #ffffff;
+  --ring: #a1a1a1;
+  --radius: 1rem;
 }
 
 @layer base {
   * {
-    border-color: rgba(99, 102, 241, 0.12);
+    border-color: var(--border);
   }
 
   body {
     background:
-      linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px),
-      var(--bg-void);
-    background-size: 32px 32px;
-    color: var(--text-primary);
-    font-family: var(--font-body), sans-serif;
+      radial-gradient(circle at 15% 15%, rgba(31, 111, 191, 0.12), transparent 40%),
+      radial-gradient(circle at 85% 8%, rgba(0, 156, 166, 0.11), transparent 35%),
+      linear-gradient(180deg, #f5f8fc 0%, #eef3f9 100%);
+    color: var(--foreground);
+    font-family: "Onest", system-ui, sans-serif;
   }
 }
 
-* :focus-visible {
-  outline: 2px solid #6366f1;
-  outline-offset: 2px;
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
 }
 
-::selection {
-  background: #6366f1;
-  color: #f1f5f9;
+.animate-marquee {
+  animation: marquee 30s linear infinite;
 }
 
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+.graph-dot-bg {
+  background-color: #f4f7fb;
+  background-image: radial-gradient(circle, rgba(33, 99, 170, 0.22) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+.surface-card {
+  border-radius: 1.25rem;
+  border: 1px solid #d4dfec;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 30px rgba(21, 35, 58, 0.08);
+  backdrop-filter: blur(6px);
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.3);
-  border-radius: 9999px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.6);
-}
-
-@layer components {
-  .terminal-card {
-    background: var(--bg-surface);
-    border: 1px solid rgba(99, 102, 241, 0.12);
-    border-radius: 12px;
-    padding: 20px 24px;
-    transition: border-color 200ms ease;
-  }
-
-  .terminal-card:hover {
-    border-color: rgba(99, 102, 241, 0.3);
-  }
-
-  .badge-private {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    color: #fca5a5;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-  }
-
-  .badge-public {
-    background: rgba(16, 185, 129, 0.1);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    color: #6ee7b7;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-  }
-
-  .redacted {
-    color: var(--color-private);
-    font-family: var(--font-code), monospace;
-    letter-spacing: 3px;
-    font-size: 13px;
-    opacity: 0.8;
-  }
-
-  .react-flow__minimap {
-    background: var(--bg-surface) !important;
-    border: 1px solid rgba(99, 102, 241, 0.22) !important;
-    border-radius: 12px;
-    overflow: hidden;
-  }
-
-  .react-flow__minimap svg {
-    background: transparent !important;
-  }
-
-  .react-flow__controls {
-    border: 1px solid rgba(99, 102, 241, 0.22) !important;
-    border-radius: 10px !important;
-    background: var(--bg-surface) !important;
-  }
-
-  .react-flow__controls button {
-    background: var(--bg-surface) !important;
-    color: var(--text-secondary) !important;
-    border-bottom-color: rgba(99, 102, 241, 0.18) !important;
-  }
-
-  .react-flow__controls button:hover {
-    background: var(--bg-highlight) !important;
-    color: var(--text-primary) !important;
-  }
+.surface-strong {
+  border-radius: 1.25rem;
+  border: 1px solid #c9d8ea;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 250, 255, 0.88));
+  box-shadow: 0 14px 34px rgba(24, 50, 86, 0.1);
 }

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 export interface StrategyCardData {
   id: string;
   direction: "buy" | "sell";
-  status: "open" | "matched" | "settled";
+  status: "open" | "matched" | "settling" | "settled";
   commitment: string;
   createdAt: number;
 }
@@ -49,12 +49,18 @@ export function StrategyCard({ strategy, onViewProof, onInspect }: StrategyCardP
           className={`rounded px-2 py-1 text-xs font-semibold ${
             strategy.status === "open"
               ? "bg-cyan-500/20 text-cyan-400"
-              : strategy.status === "matched"
+              : strategy.status === "matched" || strategy.status === "settling"
                 ? "bg-amber-500/20 text-amber-400"
                 : "bg-emerald-500/20 text-emerald-400"
           }`}
         >
-          {strategy.status === "open" ? "Open" : strategy.status === "matched" ? "Matched" : "Settled"}
+          {strategy.status === "open"
+            ? "Open"
+            : strategy.status === "matched"
+              ? "Matched"
+              : strategy.status === "settling"
+                ? "Settling"
+                : "Settled"}
         </div>
       </div>
 

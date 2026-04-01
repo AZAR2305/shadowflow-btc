@@ -14,13 +14,11 @@ import { btcClient } from "@/lib/btcClient";
 const STRK_ADDRESS =
   "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
 const ETH_ADDRESS =
-  "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"  ;
+  "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7";
 
 const STARKNET_RPC =
   process.env.NEXT_PUBLIC_STARKNET_RPC_URL ??
   "https://api.cartridge.gg/x/starknet/sepolia";
-
-
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -96,16 +94,22 @@ export async function fetchEthBalance(address: string): Promise<string> {
 /**
  * Fetch BTC balance for a Bitcoin testnet4 address via Mempool.space API.
  * Returns formatted string e.g. "0.00200000"
+ * Falls back gracefully if all sources fail.
  */
 export async function fetchBtcTestnetBalance(btcAddress: string): Promise<string> {
   try {
     if (!btcAddress || btcAddress.trim() === "") {
+      console.warn("[balanceFetcher] Empty BTC address provided");
       return "0.00000000";
     }
+    console.log(`[balanceFetcher] Fetching BTC balance for ${btcAddress.slice(0, 20)}...`);
     const bal = await btcClient.getBalance(btcAddress);
+    console.log(`[balanceFetcher] Successfully fetched BTC balance: ${bal.totalBtc}`);
     return bal.totalBtc;
   } catch (err) {
-    console.warn("[balanceFetcher] BTC balance fetch failed, using fallback:", err);
+    console.error("[balanceFetcher] BTC balance fetch failed:", err);
+    // Return 0 balance gracefully on error
+    console.log("[balanceFetcher] Returning default balance 0.00000000");
     return "0.00000000";
   }
 }

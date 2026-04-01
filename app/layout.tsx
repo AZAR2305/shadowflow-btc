@@ -1,52 +1,33 @@
-import type { Metadata } from "next";
-import { DM_Sans, JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import type React from "react"
+import type { Metadata } from "next"
 
-import "./globals.css";
-import { Sidebar } from "@/components/layout/Sidebar";
-import { Topbar } from "@/components/layout/Topbar";
-import { ThemeProvider } from "@/components/layout/ThemeProvider";
+import "./globals.css"
 
-const displayFont = Space_Grotesk({
+import { Onest } from "next/font/google"
+
+// Initialize Onest font with weights 500 and 700
+const onest = Onest({
   subsets: ["latin"],
-  variable: "--font-display",
-  weight: ["400", "500", "600", "700"],
-});
-
-const codeFont = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-code",
-});
-
-const bodyFont = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-body",
-});
+  weight: ["500", "700"],
+  variable: "--font-onest",
+})
 
 export const metadata: Metadata = {
   title: "ShadowFlowBTC++",
-  description: "Zero-knowledge private Bitcoin strategy execution system",
-};
+  description: "Backend-connected OTC intent, matching, and proof monitoring UI.",
+  icons: {
+    icon: "/icon.svg",
+  },
+}
 
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${displayFont.variable} ${codeFont.variable} ${bodyFont.variable} min-h-screen bg-background text-foreground antialiased`}
-      >
-        <ThemeProvider>
-          <div className="min-h-screen bg-background">
-            <Sidebar />
-            <div className="ml-[220px] min-h-screen">
-              <Topbar />
-              <main className="min-h-[calc(100vh-56px)]">{children}</main>
-            </div>
-          </div>
-        </ThemeProvider>
-      </body>
+    <html lang="en">
+      <body className={`${onest.variable} font-sans antialiased overflow-x-hidden`}>{children}</body>
     </html>
-  );
+  )
 }

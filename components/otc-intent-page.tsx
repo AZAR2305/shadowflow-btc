@@ -395,7 +395,7 @@ export function OtcIntentPage() {
         const depositAmountNum = Number(intent.depositAmount);
 
         // Determine the correct sender wallet based on sendChain
-        const senderWallet = intent.sendChain === 'btc' ? walletAddress : starknetAddress;
+        const senderWallet = intent.sendChain === 'btc' ? walletAddress.trim() : starknetAddress.trim();
 
         if (!Number.isFinite(amountNum) || amountNum <= 0) {
           setError("Enter a valid send amount (BTC/STRK) before submitting.");
@@ -624,9 +624,8 @@ export function OtcIntentPage() {
               sendChain: intent.sendChain,
               price: String(intent.priceThreshold || ''),
               receiveChain: intent.receiveChain,
-              wallet: typeof wallet === 'string' ? wallet : wallet?.address || '',
+              wallet: senderWallet,
               matchedWith: match.matchedWith || match.intentB || '',
-              partyB: match.partyB || '',
             });
             console.log("[OTC-INTENT] Navigating to swap-matching with params:", params.toString());
             router.push(`/swap-matching?${params.toString()}`);
@@ -647,7 +646,7 @@ export function OtcIntentPage() {
               sendChain: intent.sendChain,
               receiveAmount: String(intent.priceThreshold || ''),
               receiveChain: intent.receiveChain,
-              walletAddress: typeof wallet === 'string' ? wallet : wallet?.address || '',
+              walletAddress: senderWallet,
             });
             router.push(`/otc-waiting?${params.toString()}`);
           }, 1000);

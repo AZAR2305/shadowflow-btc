@@ -73,9 +73,8 @@ export class CrossChainService {
       const timeHex = Date.now().toString(16);
       const paddedTime = timeHex.length < 8 ? "0".repeat(8 - timeHex.length) + timeHex : timeHex;
       return `0x${paddedTime}${hashHex.slice(Math.max(0, hashHex.length - 24))}`;
-    } catch {
-      // Fallback to random hash if Poseidon fails
-      return `0xtx_intent_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate intent transaction hash: ${error}`);
     }
   }
 
@@ -105,8 +104,8 @@ export class CrossChainService {
       const timeHex = Date.now().toString(16);
       const paddedTime = timeHex.length < 8 ? "0".repeat(8 - timeHex.length) + timeHex : timeHex;
       return `0x${paddedTime}${hashHex.slice(Math.max(0, hashHex.length - 24))}`;
-    } catch {
-      return `0xtx_escrow_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate escrow transaction hash: ${error}`);
     }
   }
 
@@ -138,8 +137,8 @@ export class CrossChainService {
       const timeHex = Date.now().toString(16);
       const paddedTime = timeHex.length < 8 ? "0".repeat(8 - timeHex.length) + timeHex : timeHex;
       return `0x${paddedTime}${hashHex.slice(Math.max(0, hashHex.length - 24))}`;
-    } catch {
-      return `0xtx_settlement_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate settlement transaction hash: ${error}`);
     }
   }
 

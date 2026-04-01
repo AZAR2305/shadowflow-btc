@@ -308,16 +308,24 @@ export class Web3IntegrationService {
   private async createEscrowDeposit(
     chain: bigint,
     amount: bigint,
-    _proofHash: string
+    proofHash: string
   ): Promise<string> {
     try {
-      void _proofHash;
-      // In production, this calls the Escrow contract on Starknet
+      // Use the real OtcEscrowService to create escrow deposit
+      const { OtcEscrowService } = await import('./otcEscrowService');
+      const escrowService = OtcEscrowService.getInstance();
+      
       console.log(`Creating escrow deposit: ${amount} on chain ${chain}`);
       
-      // Mock transaction - would be real contract call
-      const tx = `0x${Date.now().toString(16)}${Math.random().toString(16).slice(2, 18)}`;
-      return tx;
+      const result = await escrowService.createEscrowDeposit(
+        proofHash, // intentId
+        proofHash, // matchId (use proofHash as placeholder)
+        amount.toString(),
+        chain as 'btc' | 'strk',
+        this.executorAddress
+      );
+      
+      return result.transactionHash;
     } catch (error) {
       console.error('Escrow deposit failed:', error);
       throw error;

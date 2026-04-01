@@ -201,9 +201,8 @@ export class ZKProofService {
         dirTag,
         pathTag,
       ]);
-    } catch {
-      // Fallback to deterministic hash
-      return `0xcommit_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate commitment hash: ${error}`);
     }
   }
 
@@ -227,8 +226,8 @@ export class ZKProofService {
         priceScaled,
         timeHex,
       ]);
-    } catch {
-      return `0xsettle_${timestamp}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate settlement hash: ${error}`);
     }
   }
 
@@ -245,7 +244,9 @@ export class ZKProofService {
       const walletTag = `0x${Buffer.from(walletAddress).toString("hex").slice(0, 60) || "0"}`;
       const amountScaled = `0x${Math.round(amount * 100_000_000).toString(16)}`;
       const matchTag = `0x${Buffer.from(matchId).toString("hex").slice(0, 60) || "0"}`;
-      const secretTag = `0x${Math.random().toString(16).slice(2, 18)}`;
+      
+      // Use commitment as secret (deterministic but unique per commitment)
+      const secretTag = commitment.slice(0, 18);
 
       return hash.computePoseidonHashOnElements([
         walletTag,
@@ -253,8 +254,8 @@ export class ZKProofService {
         matchTag,
         secretTag,
       ]);
-    } catch {
-      return `0xnull_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate nullifier: ${error}`);
     }
   }
 
@@ -274,8 +275,8 @@ export class ZKProofService {
         nullifier,
         timeHex,
       ]);
-    } catch {
-      return `0xstate_${timestamp}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate state hash: ${error}`);
     }
   }
 
@@ -295,8 +296,8 @@ export class ZKProofService {
         nullifier,
         merkleRoot,
       ]);
-    } catch {
-      return `0xproof_${Date.now()}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate proof hash: ${error}`);
     }
   }
 
@@ -331,8 +332,8 @@ export class ZKProofService {
         matchTag,
         timeHex,
       ]);
-    } catch {
-      return `0xtee_${timestamp}${Math.random().toString(16).slice(2, 10)}`;
+    } catch (error) {
+      throw new Error(`Failed to generate TEE attestation: ${error}`);
     }
   }
 

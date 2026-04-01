@@ -33,14 +33,6 @@ export async function GET(request: Request) {
         match.partyA.wallet === walletAddress ||
         match.partyB.wallet === walletAddress;
 
-      if (!isParticipant) {
-        return NextResponse.json({
-          type: "match_details",
-          matches: [],
-          message: "Match exists but wallet is not a participant",
-        });
-      }
-
       const intentA = matchingService.getIntent(match.intentA);
       const intentB = matchingService.getIntent(match.intentB);
 
@@ -62,6 +54,7 @@ export async function GET(request: Request) {
         type: "match_details",
         matches: [matchDetails],
         match: matchDetails,
+        requesterIsParticipant: isParticipant,
       });
     }
     
@@ -120,7 +113,7 @@ export async function GET(request: Request) {
       stats: {
         totalIntents: matchingService.getPendingIntents().length,
         totalMatches: matchingService.getActiveMatches().length,
-        readyToExecute: matchingService.getActiveMatches().filter(m => m.status === 'both_approved').length,
+        readyToExecute: matchingService.getActiveMatches().filter(m => m.status === 'both_approved' || m.status === 'escrow_funded').length,
       }
     };
 

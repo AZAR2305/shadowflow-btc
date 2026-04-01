@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Clock, Loader2, ArrowRight } from "lucide-react";
 
@@ -46,11 +46,16 @@ export function OtcWaitingPage({
     message: "⏳ Searching for a matching peer...",
   });
   const [timeWaited, setTimeWaited] = useState(0);
+  const hasNavigatedToMatch = useRef(false);
 
   // Poll for match status every 2 seconds
   useEffect(() => {
     const pollInterval = setInterval(async () => {
       try {
+        if (hasNavigatedToMatch.current) {
+          return;
+        }
+
         const response = await fetch(
           `/api/otc/intents/status?intentId=${encodeURIComponent(intentId)}`
         );
@@ -70,7 +75,25 @@ export function OtcWaitingPage({
               receiving: `${data.match.partyB?.receiveAmount} ${data.match.partyB?.receiveChain.toUpperCase() || ""}`,
             },
           });
-          onMatchFound?.(data.matchId);
+          if (!hasNavigatedToMatch.current) {
+            hasNavigatedToMatch.current = true;
+            onMatchFound?.(data.matchId);
+
+            const params = new URLSearchParams({
+              intentId,
+              matchId: data.matchId || "",
+              wallet: walletAddress,
+              direction: sendChain === "btc" ? "buy" : "sell",
+              amount: sendAmount,
+              price: receiveAmount,
+              sendChain,
+              receiveChain,
+            });
+
+            setTimeout(() => {
+              router.push(`/swap-matching?${params.toString()}`);
+            }, 300);
+          }
         } else if (data.status === "expired") {
           setStatus({
             intentId,
@@ -86,7 +109,17 @@ export function OtcWaitingPage({
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [intentId, walletAddress, onMatchFound, onNoMatch]);
+  }, [
+    intentId,
+    walletAddress,
+    onMatchFound,
+    onNoMatch,
+    router,
+    sendAmount,
+    sendChain,
+    receiveAmount,
+    receiveChain,
+  ]);
 
   // Track time waited (for display only, no timeout)
   useEffect(() => {

@@ -79,19 +79,39 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify the signature matches the intent and wallet
-    const intentMessageHash = `OTC_ESCROW_FUND:${intentId}:${matchId}:${fundAmount}:${sendChain}`;
-    const signatureValid = await verifySignature(
-      walletAddress,
-      intentMessageHash,
-      signature
-    );
+    // Accept multiple message formats for backward compatibility
+    const shortIntentId6 = intentId.slice(-6);
+    const shortMatchId6 = matchId.slice(-6);
+    const shortAmount = fundAmount.toString().slice(0, 8);
+    
+    // Ultra-short format (newest - for Starknet compatibility)
+    const ultraShortFormat = `E:${shortIntentId6}:${shortMatchId6}:${shortAmount}`;
+    
+    // Short format (previous version)
+    const shortIntentId12 = intentId.slice(0, 12);
+    const shortMatchId10 = matchId.slice(-10);
+    const shortFormat = `ESCROW:${shortIntentId12}:${shortMatchId10}:${fundAmount}`;
+    
+    // Old format (original)
+    const oldFormat = `OTC_ESCROW_FUND:${intentId}:${matchId}:${fundAmount}:${sendChain}`;
+    
+    const signatureValidUltraShort = await verifySignature(walletAddress, ultraShortFormat, signature);
+    const signatureValidShort = await verifySignature(walletAddress, shortFormat, signature);
+    const signatureValidOld = await verifySignature(walletAddress, oldFormat, signature);
+    const signatureValid = signatureValidUltraShort || signatureValidShort || signatureValidOld;
 
     if (!signatureValid) {
+      console.log("[ESCROW-FUND] Signature verification failed for all formats:");
+      console.log("  Ultra-short:", ultraShortFormat);
+      console.log("  Short:", shortFormat);
+      console.log("  Old:", oldFormat);
       return NextResponse.json(
         { error: "Signature verification failed" },
         { status: 401 }
       );
     }
+    
+    console.log("[ESCROW-FUND] Signature verified successfully");
 
     // Check if user already funded
     if (isPartyA && match.partyA.fundedToEscrow) {
@@ -119,17 +139,53 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Update match status to mark this party as funded
+    // ============================================
+    // STEP 1: Create REAL on-chain escrow deposit for this party
+    // ============================================
     let escrowTxHash = "";
+    let escrowDepositTxHash = "";
     let swapExecuted = false;
 
     try {
+      console.log(`\n[ESCROW-FUND] 🔒 Creating on-chain escrow deposit for ${isPartyA ? 'Party A' : 'Party B'}...`);
+      console.log(`[ESCROW-FUND] Match ID: ${matchId}`);
+      console.log(`[ESCROW-FUND] Intent ID: ${intentId}`);
+      console.log(`[ESCROW-FUND] Amount: ${fundAmount} ${sendChain.toUpperCase()}`);
+      console.log(`[ESCROW-FUND] Wallet: ${walletAddress.slice(0, 20)}...`);
+
+      // Create escrow deposit on-chain for this party
+      try {
+        const depositResult = await escrowService.createEscrowDeposit(
+          intentId,
+          matchId,
+          fundAmount.toString(),
+          sendChain as 'btc' | 'strk',
+          walletAddress
+        );
+        
+        escrowDepositTxHash = depositResult.transactionHash;
+        console.log(`\n✅ [ESCROW-FUND] Escrow deposit created on-chain!`);
+        console.log(`[ESCROW-FUND] TX Hash: ${escrowDepositTxHash}`);
+        console.log(`[ESCROW-FUND] 🔍 View on Explorer: https://sepolia.starkscan.co/tx/${escrowDepositTxHash}`);
+        console.log(`[ESCROW-FUND] 📋 Full TX Hash: ${escrowDepositTxHash}\n`);
+      } catch (depositError) {
+        console.error(`❌ [ESCROW-FUND] Failed to create escrow deposit:`, depositError);
+        return NextResponse.json(
+          {
+            error: "Failed to create escrow deposit on-chain",
+            details: depositError instanceof Error ? depositError.message : String(depositError),
+          },
+          { status: 500 }
+        );
+      }
+
       // Mark party as funded in the match
       const updatedMatch = otcService.updateMatchFundingStatus(
         intentId,
         matchId,
         isPartyA ? "partyA" : "partyB",
-        true
+        true,
+        escrowDepositTxHash
       );
 
       if (!updatedMatch) {
@@ -170,16 +226,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Return success response
+    // Return success response with REAL transaction hashes
     return NextResponse.json(
       {
         success: true,
         message: swapExecuted
           ? `Both parties funded and atomic swap executed!`
-          : `Party ${isPartyA ? "A" : "B"} funds marked. Waiting for counterparty...`,
-        escrowTxHash,
+          : `Party ${isPartyA ? "A" : "B"} escrow deposit created on-chain. Waiting for counterparty...`,
+        escrowDepositTxHash: escrowDepositTxHash,
+        escrowDepositExplorerUrl: `https://sepolia.starkscan.co/tx/${escrowDepositTxHash}`,
+        fundingTxHash: escrowDepositTxHash,
+        fundingExplorerUrl: `https://sepolia.starkscan.co/tx/${escrowDepositTxHash}`,
+        swapTxHash: escrowTxHash || null,
+        swapExplorerUrl: escrowTxHash ? `https://sepolia.starkscan.co/tx/${escrowTxHash}` : null,
         matchStatus: swapExecuted ? "executing" : "escrow_funding",
         swapExecuted,
+        swapInProgress: swapExecuted,
         fundingComplete: swapExecuted,
       },
       { status: 200 }

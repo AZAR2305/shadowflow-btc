@@ -6,6 +6,8 @@ import { CheckCircle2, Clock, Loader2, ArrowRight, AlertCircle } from "lucide-re
 
 interface MatchDetails {
   matchId: string;
+  intentA?: string;
+  intentB?: string;
   partyA: {
     wallet: string;
     sendAmount: string;
@@ -105,7 +107,13 @@ export function SwapMatchingInterface({
     }
   }, [matchId, walletAddress]);
 
-  const isPartyA = walletAddress === match?.partyA.wallet;
+  const normalizedWallet = walletAddress.trim().toLowerCase();
+  const isPartyAByIntent = !!match && !!intentId && match.intentA === intentId;
+  const isPartyAByWallet =
+    !!match &&
+    !!normalizedWallet &&
+    match.partyA.wallet.trim().toLowerCase() === normalizedWallet;
+  const isPartyA = isPartyAByIntent || isPartyAByWallet;
   const currentParty = isPartyA ? match?.partyA : match?.partyB;
   const otherParty = isPartyA ? match?.partyB : match?.partyA;
 

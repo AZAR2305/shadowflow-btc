@@ -9,13 +9,21 @@ export async function runInTEE(
   }
 
   const logs = executionFn();
-  const apiUrl = process.env.NEXT_PUBLIC_EXECUTION_API_URL;
+  const configuredApiUrl = process.env.NEXT_PUBLIC_EXECUTION_API_URL;
 
-  if (!apiUrl) {
+  if (!configuredApiUrl) {
     throw new Error("Missing NEXT_PUBLIC_EXECUTION_API_URL for TEE attestation retrieval.");
   }
 
-  const response = await fetch(`${apiUrl}/tee/attest`, {
+  const isAbsolute = /^https?:\/\//i.test(configuredApiUrl);
+  const fallbackBaseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    'http://localhost:3000';
+  const baseApiUrl = isAbsolute ? configuredApiUrl : new URL(configuredApiUrl, fallbackBaseUrl).toString();
+  const attestEndpoint = new URL('/api/tee/attest', baseApiUrl).toString();
+
+  const response = await fetch(attestEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ strategyId: strategy.id }),

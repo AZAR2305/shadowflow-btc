@@ -312,6 +312,8 @@ export class GaragaOnChainVerifier {
       } as any);
 
       console.log("✅ Proof registered on-chain:", { txHash: tx.transaction_hash });
+      console.log(`🔍 View Proof Registration: https://sepolia.starkscan.co/tx/${tx.transaction_hash}`);
+      console.log(`📋 Full TX Hash: ${tx.transaction_hash}`);
 
       return {
         isValid: true,

@@ -13,6 +13,20 @@ import type { IntentExecutionResult } from "@/lib/server/web3IntegrationService"
 
 export const runtime = "nodejs";
 
+function isVerifierUnavailable(details?: string): boolean {
+  if (!details) {
+    return false;
+  }
+
+  const msg = details.toLowerCase();
+  return (
+    msg.includes("requested contract address") ||
+    msg.includes("is not deployed") ||
+    msg.includes("class hash= 0x0") ||
+    msg.includes("entry point")
+  );
+}
+
 /**
  * Generate actionable recommendations based on failure category
  */
@@ -202,7 +216,7 @@ async function validateIntentStep(body: IntentBody): Promise<Response> {
   try {
     const garagaVerifier = getGaragaVerifier();
     onChainVerificationResult = await garagaVerifier.fullVerificationFlow(zkProof as any);
-    
+
     if (!onChainVerificationResult.verified) {
       console.error(`❌ [VALIDATE] ZK proof verification FAILED:`, onChainVerificationResult.error);
       return NextResponse.json(
@@ -451,56 +465,23 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
     const intentB = match ? matchingService.getIntent(match.intentB) : null;
 
     if (match && matchingService.areIntentsApproved(match.matchId)) {
-      console.log(`[INTENT-EXECUTE] 🎯 Both intents signed! Executing atomic swap via escrow...`);
-      
-      try {
-        // Get the account for execution
-        const web3Service = Web3IntegrationService.getInstance();
-        const account = web3Service.getExecutorAccount();
+      console.log(`[INTENT-EXECUTE] 🎯 Both intents signed! Marking match as approved...`);
 
-        // Import and use escrow service
-        const { OtcEscrowService } = await import('@/lib/server/otcEscrowService');
-        const escrowService = OtcEscrowService.getInstance();
-
-        const sigA = intentA?.signature || '';
-        const sigB = intentB?.signature || '';
-
-        const escrowResult = await escrowService.executeAtomicSwap(
-          body.intentId,
-          match.matchId,
-          match
-        );
-
-        return NextResponse.json({
-          step: "execute",
-          status: "completed",
-          mode: "otc_peer_to_peer",
-          matchId: match.matchId,
-          intentId: body.intentId,
-          transactionHash: escrowResult.transactionHash,
-          escrowAddress: escrowResult.escrowAddress,
-          steps: escrowResult.steps,
-          message: `✅ Atomic OTC swap executed! Both parties funds exchanged.`,
-          priceVerified: true,
-          walletSignatureVerified: true,
-        });
-      } catch (escrowError) {
-        const errorMsg = escrowError instanceof Error ? escrowError.message : String(escrowError);
-        console.error(`[INTENT-EXECUTE] Escrow execution failed: ${errorMsg}`);
-        
-        return NextResponse.json(
-          {
-            step: "execute",
-            status: "partial",
-            mode: "otc_peer_to_peer",
-            matchId: match?.matchId,
-            intentId: body.intentId,
-            error: `Atomic swap failed: ${errorMsg}`,
-            message: `Both parties signed, but escrow execution failed. Please try again.`,
-          },
-          { status: 502 }
-        );
+      const marked = matchingService.markMatchApproved(match.matchId);
+      if (!marked) {
+        console.warn(`[INTENT-EXECUTE] Failed to mark match as approved, status may already be: ${match.status}`);
+      } else {
+        console.log(`[INTENT-EXECUTE] Match status updated to 'both_approved'`);
       }
+
+      return NextResponse.json({
+        step: "execute",
+        status: "awaiting_escrow_funding",
+        mode: "otc_peer_to_peer",
+        matchId: match.matchId,
+        intentId: body.intentId,
+        message: "✓ Both parties signed. Next step: both parties must fund escrow. Atomic swap will execute only after both deposits are confirmed on-chain.",
+      });
     } else {
       console.log(`[INTENT-EXECUTE] ⏳ Match found but waiting for other party signature...`);
       return NextResponse.json({
@@ -529,14 +510,6 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
     console.log(`[INTENT-EXECUTE] Match ID: ${foundMatch.matchId}`);
     
     try {
-      // Get the account for execution
-      const web3Service = Web3IntegrationService.getInstance();
-      const account = web3Service.getExecutorAccount();
-
-      // Import and use escrow service
-      const { OtcEscrowService } = await import('@/lib/server/otcEscrowService');
-      const escrowService = OtcEscrowService.getInstance();
-
       // Get signatures from both intents
       const intentA = matchingService.getIntent(foundMatch.intentA);
       const intentB = matchingService.getIntent(foundMatch.intentB);
@@ -545,26 +518,23 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
 
       // Check if both have signed
       if (sigA && sigB) {
-        console.log(`[INTENT-EXECUTE] 🎯 Both intents signed! Executing atomic swap...`);
-
-        const escrowResult = await escrowService.executeAtomicSwap(
-          body.intentId,
-          foundMatch.matchId,
-          foundMatch
-        );
-
+        console.log(`[INTENT-EXECUTE] 🎯 Both intents signed! Marking match as approved...`);
+        
+        // Update match status to 'both_approved'
+        const marked = matchingService.markMatchApproved(foundMatch.matchId);
+        if (!marked) {
+          console.warn(`[INTENT-EXECUTE] Failed to mark match as approved, status may already be: ${foundMatch.status}`);
+        } else {
+          console.log(`[INTENT-EXECUTE] Match status updated to 'both_approved'`);
+        }
+        
         return NextResponse.json({
           step: "execute",
-          status: "completed",
+          status: "awaiting_escrow_funding",
           mode: "otc_peer_to_peer",
           matchId: foundMatch.matchId,
           intentId: body.intentId,
-          transactionHash: escrowResult.transactionHash,
-          escrowAddress: escrowResult.escrowAddress,
-          steps: escrowResult.steps,
-          message: `✅ Atomic OTC swap executed! Both parties funds exchanged.`,
-          priceVerified: true,
-          walletSignatureVerified: true,
+          message: "✓ Match found and both signatures collected. Next step: both parties must fund escrow. Atomic swap executes after both deposits.",
         });
       } else {
         console.log(`[INTENT-EXECUTE] Match found but waiting for other party signature...`);
@@ -587,8 +557,8 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
       }
     } catch (escrowError) {
       const errorMsg = escrowError instanceof Error ? escrowError.message : String(escrowError);
-      console.error(`[INTENT-EXECUTE] Escrow execution failed: ${errorMsg}`);
-      
+      console.error(`[INTENT-EXECUTE] Match/signature handling failed: ${errorMsg}`);
+
       return NextResponse.json(
         {
           step: "execute",
@@ -596,8 +566,8 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
           mode: "otc_peer_to_peer",
           matchId: foundMatch.matchId,
           intentId: body.intentId,
-          error: `Atomic swap failed: ${errorMsg}`,
-          message: `Matched, both signed, but escrow execution failed. Please try again.`,
+          error: `Match/signature handling failed: ${errorMsg}`,
+          message: `Match found but could not finalize signature state. Please retry.`,
         },
         { status: 502 }
       );
@@ -605,124 +575,21 @@ async function executeIntentStep(body: IntentBody): Promise<Response> {
   }
 
   // ============================================
-  // No match found: Check user preference
+  // No match found: keep intent pending (no liquidity fallback in strict OTC mode)
   // ============================================
   console.log(`[INTENT-EXECUTE] No compatible intents found.`);
-
-  // Default: wait for peer match (unless user explicitly chooses liquidity fallback)
-  const fallbackMode = body.fallbackMode ?? "wait_for_peer";
-
-  if (fallbackMode === "wait_for_peer") {
-    console.log(`[INTENT-EXECUTE] User chose to wait for peer match...`);
-    return NextResponse.json({
-      step: "execute",
-      status: "pending",
-      mode: "otc_peer_to_peer",
-      intentId: body.intentId,
-      message: `⏳ Your signature is recorded! Waiting for a matching user who wants the opposite swap...`,
-      details: {
-        yourOffer: `${intent.sendAmount} ${intent.sendChain.toUpperCase()} → ${intent.receiveAmount} ${intent.receiveChain.toUpperCase()}`,
-        waitingFor: `User offering ${intent.receiveAmount} ${intent.receiveChain.toUpperCase()} → ${intent.sendAmount} ${intent.sendChain.toUpperCase()}`,
-        estimatedWaitTime: "up to 5 minutes",
-      },
-      nextAction: {
-        option1: {
-          description: "Keep waiting (poll status)",
-          endpoint: "GET /api/otc/intents/:intentId/status",
-          checkInterval: "2-3 seconds",
-        },
-        option2: {
-          description: "Switch to liquidity pool fallback",
-          endpoint: "POST /api/otc/intents?step=execute",
-          params: {
-            intentId: body.intentId,
-            signature: body.signature,
-            fallbackMode: "use_liquidity"
-          }
-        }
-      }
-    });
-  }
-
-  // User explicitly chose liquidity pool fallback
-  console.log(`[INTENT-EXECUTE] Falling back to liquidity pool swap...`);
-
-  const amount = Number(body.amount ?? 0);
-  let priceThreshold = Number(body.priceThreshold ?? 0);
-  const sendChain = body.sendChain ?? "strk";
-  const receiveChain = body.receiveChain ?? "btc";
-  const receiveWalletAddress = body.receiveWalletAddress ?? "";
-
-  const pythService = PythPriceService.getInstance();
-  const btcPrice = await pythService.getPrice('BTC');
-  const strkPrice = await pythService.getPrice('STRK');
-
-  if (!btcPrice || !strkPrice) {
-    return NextResponse.json(
-      { error: 'Failed to fetch live prices' },
-      { status: 500 }
-    );
-  }
-
-  const oracleRate =
-    sendChain === "btc"
-      ? btcPrice.formattedPrice / strkPrice.formattedPrice
-      : strkPrice.formattedPrice / btcPrice.formattedPrice;
-
-  if (!Number.isFinite(priceThreshold) || priceThreshold <= 0) {
-    priceThreshold = amount * oracleRate;
-  }
-
-  const zkProof = ZKProofService.generatePriceVerifiedIntentProof(
-    body.intentId,
-    amount.toString(),
-    sendChain as 'btc' | 'strk',
-    priceThreshold.toString(),
-    receiveChain as 'btc' | 'strk',
-    oracleRate,
-    body.walletAddress!,
-    receiveWalletAddress
-  );
-
-  // Execute with verified signature
-  const web3Service = Web3IntegrationService.getInstance();
-  let executionResult: Partial<IntentExecutionResult> = { finalStatus: 'failed' };
-  
-  try {
-    executionResult = await web3Service.executeIntentWithFullFlow({
-      intentId: body.intentId,
-      sendAmount: amount.toString(),
-      sendChain: sendChain as 'btc' | 'strk',
-      receiveAmount: priceThreshold.toString(),
-      receiveChain: receiveChain as 'btc' | 'strk',
-      senderWallet: body.walletAddress!,
-      receiverWallet: receiveWalletAddress,
-      zkProof,
-    });
-  } catch (web3Error) {
-    console.error('Web3 execution error:', web3Error);
-    executionResult = { finalStatus: 'failed' };
-  }
-
-  if (!executionResult.bridge?.swapExecuted || !executionResult.bridge?.transactionHash) {
-    return NextResponse.json(
-      {
-        error: "Bridge execution failed",
-        executionResult,
-        signature: "Wallet signature was verified but on-chain execution failed"
-      },
-      { status: 502 }
-    );
-  }
-
+  console.log(`[INTENT-EXECUTE] Strict OTC mode enabled - waiting for peer match.`);
   return NextResponse.json({
     step: "execute",
-    status: "completed",
-    mode: "liquidity_pool",
+    status: "pending",
+    mode: "otc_peer_to_peer",
     intentId: body.intentId,
-    transactionHash: executionResult.bridge?.transactionHash,
-    walletSignatureVerified: "✓",
-    message: "Intent executed via liquidity pool"
+    message: `⏳ Your signature is recorded! Waiting for a matching user who wants the opposite swap...`,
+    details: {
+      yourOffer: `${intent.sendAmount} ${intent.sendChain.toUpperCase()} → ${intent.receiveAmount} ${intent.receiveChain.toUpperCase()}`,
+      waitingFor: `User offering ${intent.receiveAmount} ${intent.receiveChain.toUpperCase()} → ${intent.sendAmount} ${intent.sendChain.toUpperCase()}`,
+      estimatedWaitTime: "up to 5 minutes",
+    },
   });
 }
 
